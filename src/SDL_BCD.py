@@ -55,7 +55,7 @@ class SDL_BCD():
                  X_test_aux=None, # aux test data (d3 x n)
                  n_components=100,  # =: r = number of columns in dictionary matrices W, W'
                  iterations=500,
-                 ini_loading=None,  # Initialization for [W1, W2, W3] = [(dict), (reg. coeff), (reg. coeff for aux var.)]
+                 ini_loading=None,  # Initialization for [W1, [W2,W3] ] = [(dict), (reg. coeff), (reg. coeff for aux var.)]
                  #W1.shape = [d1, r], W2.shape = [d2, r], W3.shape = [d3, r]
                  ini_code=None,
                  xi = None, # weight for dim reduction vs. prediction trade-off
@@ -70,6 +70,10 @@ class SDL_BCD():
         self.nonnegativity = nonnegativity
         if X_auxiliary is not None:
             self.d3 = X_auxiliary.shape[0]
+            if ini_loading is not None:
+                Beta_aux = np.zeros((X[1].shape[0], n_components + 1 + self.d3))
+                Beta_aux[: , :ini_loading[-1].shape[1]] = ini_loading[-1]
+                ini_loading[-1] = Beta_aux
 
         self.X_test = X_test
         self.X_test_aux = X_test_aux
@@ -205,6 +209,8 @@ class SDL_BCD():
         while (i < sub_iter) and (dist > stopping_diff):
             W1_old = W1.copy()
 
+            # Regression Parameters Update
+
             X0_comp = W1.T @ X[0]
             H1_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
             if self.X_auxiliary is not None:
@@ -318,6 +324,7 @@ class SDL_BCD():
             search_radius_const=1000,
             if_compute_recons_error=False,
             update_nuance_param=False,
+            auxiliary_training=False,
             if_validate=False):
         '''
         Given input X = [data, label] and initial loading dictionary W_ini, find W = [dict, beta] and code H

@@ -1249,11 +1249,11 @@ def main(data_type = "MNIST",
 if __name__ == '__main__':
 
     main(data_type="MNIST",
-         n_components=2,
+         n_components=10,
          #xi_list = [10],
          xi_list = [0.01, 0.1, 1, 5, 10],
          beta_list = [1],
-         iteration = 200,
+         iteration = 300,
          iter_avg=2,
          plot_only=False,
          methods_list = ["LR", "MF-LR", "SDL-filt", "SDL-feat", "SDL-conv-filt", "SDL-conv-feat"],
