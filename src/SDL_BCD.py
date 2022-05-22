@@ -387,7 +387,9 @@ class SDL_BCD():
                 # Regression Parameters Update
                 X0_comp = W[0].T @ X[0]
                 if self.X_auxiliary is not None:
-                    X0_comp = np.vstack((X0_comp, self.X_auxiliary[:,:]))
+                    #print('np.linalg.norm(X0_comp)', np.linalg.norm(X0_comp))
+                    #print('np.linalg.norm(self.X_auxiliary)', np.linalg.norm(self.X_auxiliary))
+                    X0_comp = np.vstack((X0_comp, self.X_auxiliary))
                 clf = LogisticRegression(random_state=0).fit(X0_comp.T, self.X[1][0,:])
                 W[1][0,1:] = clf.coef_[0]
                 W[1][0,0] = clf.intercept_[0]
@@ -472,7 +474,7 @@ class SDL_BCD():
                     self.result_dict.update({'time_error': time_error.T})
 
                     # stopping criterion
-                    if (total_error > 0) and (total_error_new > 1.001 * total_error):
+                    if (total_error > 0) and (total_error_new > 1.01 * total_error):
                         print("Early stopping: training loss increased")
                         self.result_dict.update({'iter': step})
                         break
@@ -492,8 +494,11 @@ class SDL_BCD():
                         break
 
         ### fine-tune beta
+        if self.X_auxiliary is not None:
+            X0_comp = np.vstack((X0_comp, self.X_auxiliary[:,:]))
         clf = LogisticRegression(random_state=0).fit(X0_comp.T, self.X[1][0,:])
         W[1][0,1:] = clf.coef_[0]
+        W[1][0,0] = clf.intercept_[0]
 
         self.validation(result_dict = self.result_dict, prediction_method_list=prediction_method_list)
         #threshold = self.result_dict.get('Opt_threshold')
