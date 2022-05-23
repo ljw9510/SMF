@@ -474,7 +474,7 @@ class SDL_BCD():
                     self.result_dict.update({'time_error': time_error.T})
 
                     # stopping criterion
-                    if (total_error > 0) and (total_error_new > 1.01 * total_error):
+                    if (total_error > 0) and (total_error_new > 1.1 * total_error):
                         print("Early stopping: training loss increased")
                         self.result_dict.update({'iter': step})
                         break
@@ -494,6 +494,7 @@ class SDL_BCD():
                         break
 
         ### fine-tune beta
+        X0_comp = W[0].T @ X[0]
         if self.X_auxiliary is not None:
             X0_comp = np.vstack((X0_comp, self.X_auxiliary[:,:]))
         clf = LogisticRegression(random_state=0).fit(X0_comp.T, self.X[1][0,:])
