@@ -5,13 +5,13 @@ import pandas as pd
 
 from tqdm import trange
 import matplotlib.pyplot as plt
-from src.SNMF import SNMF, update_code_within_radius
-from src.LMF import LMF
 from src.SDL_SVP import SDL_SVP
+from src.SDL_BCD import SDL_BCD
 
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
 from sklearn.linear_model import LogisticRegression
+from scipy.interpolate import interp1d
 
 import matplotlib.gridspec as gridspec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -26,23 +26,15 @@ from scipy.spatial import ConvexHull
 
 from sklearn.datasets import fetch_openml
 from PIL import Image, ImageOps
-from pneumonia_dataprocess import process_path
 
-import seaborn as sns
-sns.set_theme()
+from src.plotting import plot_accuracy, plot_pareto, plot_benchmark_errors, get_avg_stats
+#from pneumonia_dataprocess import process_path
+
+#import seaborn as sns
+#sns.set_theme()
 
 plt.rcParams.update({
     "font.family": "serif",  # use serif/main font for text elements
-    #"font.size"   : 15,
-    "text.usetex": True,  # use inline math for ticks
-    "pgf.rcfonts": False,  # don't setup fonts from rc parameters
-    "pgf.preamble": "\n".join([
-        "\\usepackage{units}",  # load additional packages
-        "\\usepackage{metalogo}",
-        "\\usepackage{unicode-math}",  # unicode math setup
-        r"\setmathfont{xits-math.otf}",
-        r"\setmainfont{DejaVu Serif}",  # serif font via preamble
-    ])
 })
 
 
@@ -162,7 +154,7 @@ def compute_accuracy_metrics(Y_test, P_pred, train_data=None, verbose=False):
         print('threshold from training set used:', mythre)
     else:
         fpr, tpr, thresholds = metrics.roc_curve(Y_test, P_pred, pos_label=None)
-        mythre = thresholds[np.argmax(tpr - fpr)]
+        mythre_test = thresholds[np.argmax(tpr - fpr)]
         myauc_test = round(metrics.auc(fpr, tpr), 4)
         print('!!! test AUC:', myauc_test)
 
@@ -198,8 +190,8 @@ def compute_accuracy_metrics(Y_test, P_pred, train_data=None, verbose=False):
     results_dict.update({'Sensitivity': sensitivity})
     results_dict.update({'Specificity': specificity})
     results_dict.update({'Precision': precision})
-    #results_dict.update({'Fall_out': fall_out})
-    #results_dict.update({'Miss_rate': miss_rate})
+    results_dict.update({'Fall_out': fall_out})
+    results_dict.update({'Miss_rate': miss_rate})
     results_dict.update({'F_score': F_score})
 
 
@@ -318,7 +310,7 @@ def sim_data_gen_MNIST(r = [2, 2], n = 1000,
     H_true = np.random.rand(n, sum(r))
     X = H_true @ W_true
 
-    Y = generate_Y(X @ W_true.T, Beta_true, n) # true labels
+    Y = generate_Y(X @ W_true_Y.T, Beta_true, n) # true labels
     X += Noise # corrupt true signal
 
     X_train, X_test, Y_train, Y_test, H_train, H_test = train_test_split(X, Y, H_true, test_size = 0.2)
@@ -445,205 +437,260 @@ def sim_data_gen(p=200, r=2, n=1000, noise_std=0, random_seed=1, use_separate_W=
     return X_train, X_test, Y_train, Y_test, W_true, H_true, X, Y, Beta_true
 
 
-def run_methods(data, n_components,
-                xi_list = [0, 0.1, 1, 5, 10],
+def run_methods(data,
+                n_components,
+                data_aux = None,
+                xi_list = [0, 0.001, 1,  3, 5, 10],
                 beta_list = [1, None],
-                iteration = 200, iter_avg = 2,
+                iteration=200, iter_avg=2,
+                methods_list = ["LR", "MF-LR", "SDL-filt", "SDL-feat", "SDL-conv-filt", "SDL-conv-feat"],
                 save_path = None):
     # data  = [X_train, X_test, Y_train, Y_test]
     ## Cross validation plot --- MF + LR, SNMF, LR
+    print("methods_list", methods_list)
 
     X_train, X_test, Y_train, Y_test = data
+    if data_aux is not None:
+        covariate_train, covariate_test = data_aux
     r = n_components
     p = X_train.shape[0]
     results_dict_list = []
+    full_result_list = []
 
 
     # LR
-    print('X_train.T.shape', X_train.T.shape)
-    print('Y_train[0,:].shape', Y_train[0,:].shape)
+    if "LR" in methods_list:
 
-    clf = LogisticRegression(random_state=0).fit(X_train.T, Y_train[0,:])
-    P_train = clf.predict_proba(X_train.T)
-    P_pred = clf.predict_proba(X_test.T)
-    results = compute_accuracy_metrics(Y_test[0], P_pred[:,1], train_data = [Y_train[0], P_train[:,1]],
-                                       verbose=True)
+        if data_aux is not None:
+            X0_train = np.vstack([X_train, covariate_train])
+            X0_test = np.vstack([X_test, covariate_test])
+            print('X0_train.T.shape', X0_train.T.shape)
+            clf = LogisticRegression(random_state=0).fit(X0_train.T, Y_train[0,:])
+            P_train = clf.predict_proba(X0_train.T)
+            P_pred = clf.predict_proba(X0_test.T)
+        else:
+            print('X_train.T.shape', X_train.T.shape)
+            print('Y_train[0,:].shape', Y_train[0,:].shape)
+            clf = LogisticRegression(random_state=0).fit(X_train.T, Y_train[0,:])
+            P_train = clf.predict_proba(X_train.T)
+            P_pred = clf.predict_proba(X_test.T)
 
-    results.update({'method': 'LR'})
-    results.update({'xi': None})
-    results.update({'beta': None})
-    results.update({'Relative_reconstruction_loss (test)': 1})
-    LR_AUC = results.get('Accuracy')
-    results.update({'Accuracy': results.get('Accuracy')})
-    results_dict_list.append(results.copy())
+        results = compute_accuracy_metrics(Y_test[0], P_pred[:,1], train_data = [Y_train[0], P_train[:,1]],
+                                           verbose=True)
 
-    # SDL_SVP_filter
-    data_scale=10
-    for j in range(len(xi_list)):
-        xi = xi_list[j]
-        for i in range(iter_avg):
-            SDL_SVP_class = SDL_SVP(X=[X_train/data_scale, Y_train],  # data, label
-                                    X_test=[X_test/data_scale, Y_test],
-                                    #X_auxiliary = None,
-                                    n_components=r,  # =: r = number of columns in dictionary matrices W, W'
-                                    # ini_loading=None,  # Initializatio for [W,W'], W1.shape = [d1, r], W2.shape = [d2, r]
-                                    # ini_loading=[W_true, np.hstack((np.array([[0]]), Beta_true))],
-                                    # ini_code = H_true,
-                                    xi=xi,  # weight on label reconstruction error
-                                    L1_reg = [0,0,0], # L1 regularizer for code H, dictionary W[0], reg param W[1]
-                                    L2_reg = [0,0,0], # L2 regularizer for code H, dictionary W[0], reg param W[1]
-                                    full_dim=False) # if true, dictionary is Id with full dimension --> Pure regression
-
-            results_dict_new = SDL_SVP_class.fit(iter=iteration, subsample_size=None,
-                                                    beta = 0,
-                                                    nu = 2,
-                                                    search_radius_const=0.05,
-                                                    update_nuance_param=False,
-                                                    SDL_option = 'filter',
-                                                    prediction_method_list = ['filter'],
-                                                    fine_tune_beta = False,
-                                                    if_compute_recons_error=True, if_validate=False)
-            results_dict_new.update({'method': 'SDL-conv-filt'})
-            results_dict_new.update({'beta': None})
-            results_dict_new.update({'Accuracy': results_dict_new.get('Accuracy (filter)')})
-            results_dict_new.update({'F_score': results_dict_new.get('F_score (filter)')})
-            results_dict_list.append(results_dict_new.copy())
-
-    # SDL_SVP_feature
-    data_scale=10
-    prediction_method_list = ['naive']
-    for j in range(len(xi_list)):
-        xi = xi_list[j]
-        for i in range(iter_avg):
-            data_scale=500
-            SDL_SVP_class = SDL_SVP(X=[X_train/data_scale, Y_train],  # data, label
-                                    X_test=[X_test/data_scale, Y_test],
-                                    #X_auxiliary = None,
-                                    n_components=r,  # =: r = number of columns in dictionary matrices W, W'
-                                    # ini_loading=None,  # Initializatio for [W,W'], W1.shape = [d1, r], W2.shape = [d2, r]
-                                    # ini_loading=[W_true, np.hstack((np.array([[0]]), Beta_true))],
-                                    # ini_code = H_true,
-                                    xi=xi,  # weight on label reconstruction error
-                                    L1_reg = [0,0,0], # L1 regularizer for code H, dictionary W[0], reg param W[1]
-                                    L2_reg = [0,0,0], # L2 regularizer for code H, dictionary W[0], reg param W[1]
-                                    full_dim=False) # if true, dictionary is Id with full dimension --> Pure regression
-
-            results_dict_new = SDL_SVP_class.fit(iter=iteration, subsample_size=None,
-                                                beta = 0,
-                                                nu = 2,
-                                                search_radius_const=0.01,
-                                                update_nuance_param=False,
-                                                SDL_option = 'feature',
-                                                #prediction_method_list = ['naive', 'exhaustive'],
-                                                prediction_method_list = prediction_method_list,
-                                                fine_tune_beta = False,
-                                                if_compute_recons_error=True, if_validate=False)
-
-            for pred_type in prediction_method_list:
-                results_dict_new.update({'method': 'SDL-conv-feat ({})'.format(str(pred_type))})
-                results_dict_new.update({'beta': None})
-                results_dict_new.update({'Accuracy': results_dict_new.get('Accuracy ({})'.format(str(pred_type)))})
-                results_dict_new.update({'F_score': results_dict_new.get('F_score ({})'.format(str(pred_type)))})
-                results_dict_list.append(results_dict_new.copy())
-
-
-    # LMF (SDL-filter)
-    prediction_method_list = ['naive']
-    for beta in beta_list:
-        for j in range(len(xi_list)):
-            xi = xi_list[j]
-            for i in range(iter_avg):
-                LMF_class_new = LMF(X=[X_train, Y_train],  # data, label
-                                X_test=[X_test, Y_test],
-                                #X_auxiliary = None,
-                                n_components=r,  # =: r = number of columns in dictionary matrices W, W'
-                                # ini_loading=None,  # Initializatio for [W,W'], W1.shape = [d1, r], W2.shape = [d2, r]
-                                # ini_loading=[W_true, np.hstack((np.array([[0]]), Beta_true))],
-                                # ini_code = H_true,
-                                xi=xi,  # weight on label reconstruction error
-                                L1_reg = [0,0,0], # L1 regularizer for code H, dictionary W[0], reg param W[1]
-                                L2_reg = [0,0,0], # L2 regularizer for code H, dictionary W[0], reg param W[1]
-                                nonnegativity=[True,True,False], # nonnegativity constraints on code H, dictionary W[0], reg params W[1]
-                                full_dim=False) # if true, dictionary is Id with full dimension --> Pure regression
-
-                results_dict_new = LMF_class_new.train_logistic(iter=iteration, subsample_size=None,
-                                                        beta = beta,
-                                                        search_radius_const=np.linalg.norm(X_train),
-                                                        fine_tune_beta=True,
-                                                        update_nuance_param=False,
-                                                        prediction_method_list = prediction_method_list,
-                                                        if_compute_recons_error=False, if_validate=False)
-
-                for pred_type in prediction_method_list:
-                    results_dict_new.update({'method': 'SDL-feat ({})'.format(str(pred_type))})
-                    results_dict_new.update({'beta': beta})
-                    results_dict_new.update({'Accuracy': results_dict_new.get('Accuracy ({})'.format(str(pred_type)))})
-                    results_dict_new.update({'F_score': results_dict_new.get('F_score ({})'.format(str(pred_type)))})
-                    results_dict_list.append(results_dict_new.copy())
-
-
-                if save_path is not None:
-                    np.save(save_path, results_dict_list)
-
-
-    # MF --> LR
-    print('MF->LR')
-    for i in range(iter_avg):
-        W, H = ALS(X_train,
-                    n_components = r, # number of columns in the dictionary matrix W
-                    n_iter=iteration,
-                    a0 = 0, # L1 regularizer for H
-                    a1 = 0, # L1 regularizer for W
-                    a12 = 0, # L2 regularizer for W
-                    H_nonnegativity=True,
-                    W_nonnegativity=True,
-                    compute_recons_error=False,
-                    subsample_ratio = 1)
-
-        clf = LogisticRegression(random_state=0).fit((W.T @ X_train).T, Y_train[0,:])
-        P_train = clf.predict_proba((W.T @ X_train).T)
-        P_pred = clf.predict_proba((W.T @ X_test).T)
-        results = compute_accuracy_metrics(Y_test[0], P_pred[:,1], train_data=[Y_train[0], P_train[:,1]], verbose=True)
-        results.update({'method': 'MF-LR'})
-
-        coder = SparseCoder(dictionary=W.T, transform_n_nonzero_coefs=None,
-                                transform_alpha=0, transform_algorithm='lasso_lars', positive_code=True)
-        H1 = coder.transform(X_test.T).T
-        error_data = np.linalg.norm((X_test - W @ H1).reshape(-1, 1), ord=2)**2
-        rel_error_data = error_data / np.linalg.norm(X_test.reshape(-1, 1), ord=2)**2
-        results.update({'Relative_reconstruction_loss (test)': rel_error_data})
+        results.update({'method': 'LR'})
         results.update({'xi': None})
         results.update({'beta': None})
+        results.update({'Relative_reconstruction_loss (test)': 1})
+        LR_AUC = results.get('Accuracy')
+        results.update({'Accuracy': results.get('Accuracy')})
         results_dict_list.append(results.copy())
 
 
-    # SNMF
-    for beta in beta_list:
+    # MF --> LR
+    if "MF-LR" in methods_list:
+        for i in range(iter_avg):
+            print('MF-LR')
+            W, H = ALS(X_train,
+                        n_components = r, # number of columns in the dictionary matrix W
+                        n_iter=iteration,
+                        a0 = 0, # L1 regularizer for H
+                        a1 = 0, # L1 regularizer for W
+                        a12 = 0, # L2 regularizer for W
+                        H_nonnegativity=True,
+                        W_nonnegativity=True,
+                        compute_recons_error=False,
+                        subsample_ratio = 1)
+
+            if data_aux is not None:
+                X0_train = np.vstack([X_train, covariate_train])
+                X0_test = np.vstack([X_test, covariate_test])
+                print('X0_train.T.shape', X0_train.T.shape)
+                clf = LogisticRegression(random_state=0).fit((W.T @ X0_train).T, Y_train[0,:])
+                P_train = clf.predict_proba((W.T @ X0_train).T)
+                P_pred = clf.predict_proba((W.T @ X0_test).T)
+            else:
+                print('X_train.T.shape', X_train.T.shape)
+                print('Y_train[0,:].shape', Y_train[0,:].shape)
+                clf = LogisticRegression(random_state=0).fit((W.T @ X_train).T, Y_train[0,:])
+                P_train = clf.predict_proba((W.T @ X_train).T)
+                P_pred = clf.predict_proba((W.T @ X_test).T)
+
+            results = compute_accuracy_metrics(Y_test[0], P_pred[:,1], train_data=[Y_train[0], P_train[:,1]], verbose=True)
+            results.update({'method': 'MF-LR'})
+
+            coder = SparseCoder(dictionary=W.T, transform_n_nonzero_coefs=None,
+                                    transform_alpha=0, transform_algorithm='lasso_lars', positive_code=True)
+            H1 = coder.transform(X_test.T).T
+            error_data = np.linalg.norm((X_test - W @ H1).reshape(-1, 1), ord=2)**2
+            rel_error_data = error_data / np.linalg.norm(X_test.reshape(-1, 1), ord=2)**2
+            results.update({'Relative_reconstruction_loss (test)': rel_error_data})
+            results.update({'xi': None})
+            results.update({'beta': None})
+            results.update({'W': W})
+            results.update({'beta_regression': clf.coef_})
+            results_dict_list.append(results.copy())
+
+
+    # (SDL-filter)
+    if "SDL-filt" in methods_list:
+        for beta in beta_list:
+            for j in range(len(xi_list)):
+                xi = xi_list[j]
+                for i in range(iter_avg):
+                    print("SDL-filt..")
+                    SDL_BCD_class = SDL_BCD(X=[X_train, Y_train],  # data, label
+                                    X_test=[X_test, Y_test],
+                                    #X_auxiliary = None,
+                                    n_components=r,  # =: r = number of columns in dictionary matrices W, W'
+                                    # ini_loading=None,  # Initializatio for [W,W'], W1.shape = [d1, r], W2.shape = [d2, r]
+                                    # ini_loading=[W_true, np.hstack((np.array([[0]]), Beta_true))],
+                                    # ini_code = H_true,
+                                    xi=xi,  # weight on label reconstruction error
+                                    L1_reg = [0,0,0], # L1 regularizer for code H, dictionary W[0], reg param W[1]
+                                    L2_reg = [0,0,0], # L2 regularizer for code H, dictionary W[0], reg param W[1]
+                                    nonnegativity=[True,True,False], # nonnegativity constraints on code H, dictionary W[0], reg params W[1]
+                                    full_dim=False) # if true, dictionary is Id with full dimension --> Pure regression
+
+
+                    results_dict_new = SDL_BCD_class.fit(iter=iteration, subsample_size=None,
+                                                            beta = beta,
+                                                            option = "filter",
+                                                            search_radius_const=iteration*np.linalg.norm(X_train),
+                                                            update_nuance_param=False,
+                                                            if_compute_recons_error=True, if_validate=False)
+
+                    results_dict_new.update({'method': 'SDL-filt'})
+                    results_dict_new.update({'beta': beta})
+                    results_dict_new.update({'time_error': results_dict_new.get('time_error')})
+                    results_dict_list.append(results_dict_new.copy())
+                    # print('Beta_learned', results_dict.get('loading')[1])
+
+
+
+    # (SDL-feature)
+    if "SDL-feat" in methods_list:
+        prediction_method_list = ['naive']
+        for beta in beta_list:
+            for j in range(len(xi_list)):
+                xi = xi_list[j]
+                for i in range(iter_avg):
+                    print("SDL-feat..")
+                    SDL_BCD_class = SDL_BCD(X=[X_train, Y_train],  # data, label
+                                    X_test=[X_test, Y_test],
+                                    #X_auxiliary = None,
+                                    n_components=r,  # =: r = number of columns in dictionary matrices W, W'
+                                    # ini_loading=None,  # Initializatio for [W,W'], W1.shape = [d1, r], W2.shape = [d2, r]
+                                    # ini_loading=[W_true, np.hstack((np.array([[0]]), Beta_true))],
+                                    # ini_code = H_true,
+                                    xi=xi,  # weight on label reconstruction error
+                                    L1_reg = [0,0,0], # L1 regularizer for code H, dictionary W[0], reg param W[1]
+                                    L2_reg = [0,0,0], # L2 regularizer for code H, dictionary W[0], reg param W[1]
+                                    nonnegativity=[True,True,False], # nonnegativity constraints on code H, dictionary W[0], reg params W[1]
+                                    full_dim=False) # if true, dictionary is Id with full dimension --> Pure regression
+
+                    results_dict_new = SDL_BCD_class.fit(iter=iteration, subsample_size=None,
+                                                            beta = beta,
+                                                            option = "feature",
+                                                            search_radius_const=iteration*np.linalg.norm(X_train),
+                                                            update_nuance_param=False,
+                                                            #prediction_method_list = prediction_method_list,
+                                                            if_compute_recons_error=True, if_validate=False)
+
+                    for pred_type in prediction_method_list:
+                        #results_dict_new.update({'method': 'SDL-feat ({})'.format(str(pred_type))})
+                        results_dict_new.update({'method': 'SDL-feat'})
+                        results_dict_new.update({'beta': beta})
+                        results_dict_new.update({'Accuracy': results_dict_new.get('Accuracy')})
+                        results_dict_new.update({'F_score': results_dict_new.get('F_score')})
+                        #results_dict_new.update({'Accuracy': results_dict_new.get('Accuracy ({})'.format(str(pred_type)))})
+                        #results_dict_new.update({'F_score': results_dict_new.get('F_score ({})'.format(str(pred_type)))})
+                        results_dict_new.update({'time_error': results_dict_new.get('time_error')})
+                        results_dict_list.append(results_dict_new.copy())
+
+
+                    if save_path is not None:
+                        np.save(save_path, results_dict_list)
+
+
+    # SDL_SVP_filter
+    if "SDL-conv-filt" in methods_list:
+        data_scale=10
+        for j in range(len(xi_list)):
+            xi = xi_list[j]
+            list_full_timed_errors = []
+            for i in range(iter_avg):
+                print("SDL-conv-filt..")
+                SDL_SVP_class = SDL_SVP(X=[X_train/data_scale, Y_train],  # data, label
+                                        X_test=[X_test/data_scale, Y_test],
+                                        #X_auxiliary = covariate_train/data_scale,
+                                        #X_test_aux = covariate_test/data_scale,
+                                        n_components=r,  # =: r = number of columns in dictionary matrices W, W'
+                                        # ini_loading=None,  # Initializatio for [W,W'], W1.shape = [d1, r], W2.shape = [d2, r]
+                                        # ini_loading=[W_true, np.hstack((np.array([[0]]), Beta_true))],
+                                        # ini_code = H_true,
+                                        xi=xi,  # weight on label reconstruction error
+                                        L1_reg = [0,0,0], # L1 regularizer for code H, dictionary W[0], reg param W[1]
+                                        L2_reg = [0,0,0]) # L2 regularizer for code H, dictionary W[0], reg param W[1]
+
+
+                results_dict_new = SDL_SVP_class.fit(iter=iteration, subsample_size=None,
+                                                        beta = 0,
+                                                        nu = 2,
+                                                        search_radius_const=0.01,
+                                                        update_nuance_param=False,
+                                                        SDL_option = 'filter',
+                                                        prediction_method_list = ['filter'],
+                                                        fine_tune_beta = False,
+                                                        if_compute_recons_error=True, if_validate=False)
+
+                results_dict_new.update({'method': 'SDL-conv-filt'})
+                results_dict_new.update({'beta': None})
+                results_dict_new.update({'Accuracy': results_dict_new.get('Accuracy (filter)')})
+                results_dict_new.update({'F_score': results_dict_new.get('F_score (filter)')})
+                results_dict_new.update({'time_error': results_dict_new.get('time_error')})
+                results_dict_list.append(results_dict_new.copy())
+
+
+    # SDL_SVP_feature
+    if "SDL-conv-feat" in methods_list:
+        data_scale=10
+        prediction_method_list = ['naive']
         for j in range(len(xi_list)):
             xi = xi_list[j]
             for i in range(iter_avg):
-                SNMF_class_new = SNMF(X=[X_train, Y_train],  # data, label
-                                X_test=[X_test, Y_test],
-                                #X_auxiliary = None,
-                                n_components=r,  # =: r = number of columns in dictionary matrices W, W'
-                                # ini_loading=None,  # Initialization for [W,W'], W1.shape = [d1, r], W2.shape = [d2, r]
-                                # ini_loading=[W_true, np.hstack((np.array([[0]]), Beta_true))],
-                                # ini_code = H_true,
-                                xi=xi,  # weight on label reconstruction error
-                                L1_reg = [0,0,0], # L1 regularizer for code H, dictionary W[0], reg param W[1]
-                                L2_reg = [0,0,0], # L2 regularizer for code H, dictionary W[0], reg param W[1]
-                                nonnegativity=[True,True,False], # nonnegativity constraints on code H, dictionary W[0], reg params W[1]
-                                full_dim=False) # if true, dictionary is Id with full dimension --> Pure regression
+                print("SDL-conv-feat..")
+                data_scale=500
+                SDL_SVP_class = SDL_SVP(X=[X_train/data_scale, Y_train],  # data, label
+                                        X_test=[X_test/data_scale, Y_test],
+                                        #X_auxiliary = covariate_train/data_scale,
+                                        #X_test_aux = covariate_test/data_scale,
+                                        n_components=r,  # =: r = number of columns in dictionary matrices W, W'
+                                        # ini_loading=None,  # Initializatio for [W,W'], W1.shape = [d1, r], W2.shape = [d2, r]
+                                        # ini_loading=[W_true, np.hstack((np.array([[0]]), Beta_true))],
+                                        # ini_code = H_true,
+                                        xi=xi,  # weight on label reconstruction error
+                                        L1_reg = [0,0,0], # L1 regularizer for code H, dictionary W[0], reg param W[1]
+                                        L2_reg = [0,0,0]) # L2 regularizer for code H, dictionary W[0], reg param W[1]
 
-                results_dict_new = SNMF_class_new.train_logistic(iter=iteration, subsample_size=None,
-                                                        beta = beta,
-                                                        search_radius_const=np.linalg.norm(X_train),
-                                                        update_nuance_param=False,
-                                                        if_compute_recons_error=False, if_validate=False)
-                results_dict_new.update({'method': 'SDL-filt'})
-                results_dict_new.update({'beta': beta})
-                results_dict_list.append(results_dict_new.copy())
-                # print('Beta_learned', results_dict.get('loading')[1])
+
+                results_dict_new = SDL_SVP_class.fit(iter=iteration, subsample_size=None,
+                                                    beta = 0,
+                                                    nu = 2,
+                                                    search_radius_const=0.01,
+                                                    update_nuance_param=False,
+                                                    SDL_option = 'feature',
+                                                    #prediction_method_list = ['naive', 'exhaustive'],
+                                                    prediction_method_list = prediction_method_list,
+                                                    if_compute_recons_error=True, if_validate=False)
+
+                for pred_type in prediction_method_list:
+                    results_dict_new.update({'method': 'SDL-conv-feat ({})'.format(str(pred_type))})
+                    results_dict_new.update({'beta': None})
+                    results_dict_new.update({'Accuracy': results_dict_new.get('Accuracy ({})'.format(str(pred_type)))})
+                    results_dict_new.update({'F_score': results_dict_new.get('F_score ({})'.format(str(pred_type)))})
+                    results_dict_new.update({'time_error': results_dict_new.get('time_error')})
+                    results_dict_list.append(results_dict_new.copy())
 
     if save_path is not None:
         np.save(save_path, results_dict_list)
@@ -655,44 +702,13 @@ def run_methods(data, n_components,
         np.save(save_path, results_dict_list)
 
     return results_dict_list
-
-
-
-
-def get_avg_stats_old(input_list, metric = "Accuracy"):
-    method_xi_list = []
-    for i in np.arange(len(input_list)):
-        method = input_list[i].get("method")
-        xi = input_list[i].get("xi")
-        if [method, xi] not in method_xi_list:
-            method_xi_list.append([method, xi])
-
-    results_list = []
-    method_xi_list_new = []
-    for method_xi in method_xi_list:
-        method, xi = method_xi[0], method_xi[1]
-        avg_results = {}
-        avg_results.update({"method":method})
-        avg_results.update({"xi":xi})
-        avg_acc_list = []
-        avg_rec_list = []
-        for i in np.arange(len(input_list)):
-            if (method == input_list[i].get("method")) and (xi == input_list[i].get("xi")):
-                avg_acc_list.append(input_list[i].get(metric))
-                avg_rec_list.append(input_list[i].get("Relative_reconstruction_loss (test)"))
-                avg_results.update({"avg_acc_list": avg_acc_list})
-                avg_results.update({"avg_rec_list": avg_rec_list})
-        if [method, xi] not in method_xi_list_new:
-            results_list.append(avg_results)
-            method_xi_list_new.append([method, xi])
-
-    return sorted(results_list, key=lambda d: d['method'])
 
 
 def get_avg_stats(input_list, metric = "Accuracy"):
     method_xi_list = []
     for i in np.arange(len(input_list)):
         method = input_list[i].get("method")
+        #method = method.replace(" (naive)", "")
 
         xi = input_list[i].get("xi")
         beta = input_list[i].get("beta")
@@ -739,20 +755,20 @@ def plot_accuracy(results_dict_list, save_path, metric="Accuracy", beta_list_plo
     color_dict.update({'LR':'gray'})
     color_dict.update({'MF-LR':'k'})
     color_dict.update({'SDL-filt':'b'})
-    color_dict.update({'SDL-feat (naive)':'r'})
-    color_dict.update({'SDL-feat (exhaustive)':'b'})
+    color_dict.update({'SDL-feat':'r'})
+    #color_dict.update({'SDL-feat (exhaustive)':'b'})
     color_dict.update({'SDL-conv-filt':'g'})
     color_dict.update({'SDL-conv-feat (naive)':'r'})
-    color_dict.update({'SDL-conv-feat (exhaustive)':'g'})
+    #color_dict.update({'SDL-conv-feat (exhaustive)':'g'})
     marker_dict = {}
     marker_dict.update({'LR':'+'})
     marker_dict.update({'MR-->LR':">"})
     marker_dict.update({'SDL-filt':'*'})
-    marker_dict.update({'SDL-feat (naive)':'x'})
-    marker_dict.update({'SDL-feat (exhaustive)':'^'})
+    marker_dict.update({'SDL-feat':'x'})
+    #marker_dict.update({'SDL-feat (exhaustive)':'^'})
     marker_dict.update({'SDL-conv-filt':''})
     marker_dict.update({'SDL-conv-feat (naive)':''})
-    marker_dict.update({'SDL-conv-feat (exhaustive)':''})
+    #marker_dict.update({'SDL-conv-feat (exhaustive)':''})
 
     # Get list of hyperparameters
     method_list = []
@@ -793,6 +809,8 @@ def plot_accuracy(results_dict_list, save_path, metric="Accuracy", beta_list_plo
             accuracy_mean = np.sum(accuracy_array, axis=0) / accuracy_array.shape[0]  ### axis-0 : trials
             accuracy_std = np.std(accuracy_array, axis=0)
 
+            print("!!!accuracy_array", accuracy_array)
+
             if method == "LR":
                 ax.axhline(y=accuracy_mean[0], color=color, linestyle='--', label="LR")
             else:
@@ -810,9 +828,8 @@ def plot_accuracy(results_dict_list, save_path, metric="Accuracy", beta_list_plo
                     else:
                         method = s[0] #+ " (DR) " + s[1]
 
-
                 markers, caps, bars = ax.errorbar(xi_list, accuracy_mean, yerr=accuracy_std,
-                                                       fmt=color, marker=marker, linestyle=linestyle, label=method, errorevery=5, markersize=10)
+                                                       fmt=color, marker=marker, linestyle=linestyle, label=method, errorevery=20, markersize=10)
                 ax.fill_between(xi_list, accuracy_mean - accuracy_std, accuracy_mean + accuracy_std, facecolor=color, alpha=0.1)
 
 
@@ -841,20 +858,20 @@ def plot_pareto(results_dict_list, save_path,
     color_dict.update({'LR':'gray'})
     color_dict.update({'MF-LR':'k'})
     color_dict.update({'SDL-filt':'b'})
-    color_dict.update({'SDL-feat (naive)':'r'})
-    color_dict.update({'SDL-feat (exhaustive)':'b'})
+    color_dict.update({'SDL-feat':'r'})
+    #color_dict.update({'SDL-feat (exhaustive)':'b'})
     color_dict.update({'SDL-conv-filt':'g'})
-    color_dict.update({'SDL-conv-feat (naive)':'r'})
-    color_dict.update({'SDL-conv-feat (exhaustive)':'g'})
+    color_dict.update({'SDL-conv-feat':'y'})
+    #color_dict.update({'SDL-conv-feat (exhaustive)':'g'})
     marker_dict = {}
     marker_dict.update({'LR':'+'})
-    marker_dict.update({'MR-->LR':">"})
+    marker_dict.update({'MF-LR':">"})
     marker_dict.update({'SDL-filt':'*'})
-    marker_dict.update({'SDL-feat (naive)':'x'})
-    marker_dict.update({'SDL-feat (exhaustive)':'^'})
+    marker_dict.update({'SDL-feat':'x'})
+    #marker_dict.update({'SDL-feat (exhaustive)':'^'})
     marker_dict.update({'SDL-conv-filt':'o'})
-    marker_dict.update({'SDL-conv-feat (naive)':'|'})
-    marker_dict.update({'SDL-conv-feat (exhaustive)':'<'})
+    marker_dict.update({'SDL-conv-feat (naive)':'p'})
+    #marker_dict.update({'SDL-conv-feat (exhaustive)':'<'})
 
     xi_list = []
     for i in np.arange(len(avg_results_list)):
@@ -873,7 +890,7 @@ def plot_pareto(results_dict_list, save_path,
         xi = None
         if not ((method not in ["LR", "MF-LR"]) and (beta in beta_list_plot)):
 
-            if method in ['SDL-filt', 'SDL-feat (naive)', 'SDL-feat (exhaustive)', 'SDL-conv-filt', 'SDL-conv-feat (naive)', 'SDL-conv-feat (exhaustive)']:
+            if method in ['SDL-filt', 'SDL-feat', 'SDL-conv-filt', 'SDL-conv-feat (naive)', 'SDL-conv-feat (exhaustive)']:
                 xi = result_dict.get('xi')
             #print('xi', xi)
 
@@ -896,8 +913,8 @@ def plot_pareto(results_dict_list, save_path,
             if (xi is not None) and (xi>xi_min):
                 ax.scatter(rel_recons_error, accuracy, s=100, c=color, alpha=1, marker=marker)
             else:
-                ax.scatter(rel_recons_error, accuracy, s=100, c=color, alpha=1, label=method0, marker=marker)
-            if (method in ['SDL-filt', 'SDL-feat (exhaustive)']) and (xi in [0, 0.001, 10]):
+                ax.scatter(rel_recons_error, accuracy, s=100, c=color, alpha=1, label=method0.replace(" (naive)", ""), marker=marker)
+            if (method in ['SDL-filt', 'SDL-conv-filt', 'SDL-conv-feat (naive)', 'SDL-feat']) and (xi in [0, 11]):
                 x_len = xlim[1]-xlim[0]
                 y_len = ylim[1]-ylim[0]
                 ax.annotate(r" $\xi={}$".format(xi), (rel_recons_error-(0.07*x_len), accuracy+0.02*(y_len)), fontsize=9)
@@ -921,73 +938,234 @@ def plot_pareto(results_dict_list, save_path,
             ax.set_ylabel(metric, fontsize=10)
             ax.set_xlim(xlim)
             ax.set_ylim(ylim)
-            ax.legend()
+            ax.legend(loc='lower right')
     if title is not None:
         plt.title(title, fontsize=13)
     plt.tight_layout(rect=[0, 0.03, 1, 0.9])
     plt.savefig(save_path)
 
 
-def main(data_type = "MNIST",
-         n_components = 2,
-         xi_list = [0, 0.1, 1, 5, 10],
-         beta_list = [0.5, None],
-         noise = 1,
-         iteration = 200,
-         iter_avg=2,
-         plot_only=False):
 
-    folder_name = "SDL_sim_J"
+
+from scipy.interpolate import interp1d
+
+def plot_benchmark_errors(full_result_list, save_path,
+                          method_list=None,
+                          fig_size=[10,10],
+                          xi_list_custom=None):
+    if method_list is None:
+        method_list = ["SDL-conv-feat (naive)", "SDL-conv-filt"]
+
+    time_records = []
+    errors = []
+    f_interpolated_list = []
+
+    methods_list = []
+    stats_list = []
+    xi_list = []
+    for i in np.arange(len(full_result_list)):
+        #if full_result_list[i].get("method")[0] not in ["LR", "MF-LR"]:
+        method_name = full_result_list[i].get("method")[0]
+        method_name = method_name.replace(" (naive)", "")
+        if method_name in method_list:
+            methods_list.append(full_result_list[i].get("method"))
+            stats_list.append(np.asarray(full_result_list[i].get('avg_acc_list')))
+            xi_list.append(full_result_list[i].get("xi"))
+    print('methods_list', methods_list)
+    #print('stats_list', stats_list)
+
+
+    # max duration and time records
+    x_all_max = 0
+    for i in np.arange(len(stats_list)):
+        errors0 = stats_list[i]
+        x_all_max = max(x_all_max, max(errors0[:,0,-1]))
+
+    x_all = np.linspace(0, x_all_max, num=101, endpoint=True)
+
+    for i in np.arange(len(stats_list)):
+        errors0 = stats_list[i] # trials x (time, error_data, error_label) x iterations
+        time_records.append(x_all[x_all < min(errors0[:, 0, -1])])
+
+    #print('time_records', len(time_records))
+
+    # interpolate data and have common carrier
+
+    for i in np.arange(len(stats_list)):
+        errors0 = stats_list[i]
+        f0_interpolated = []
+
+        for j in np.arange(errors0.shape[0]): # trials for same setting
+            f0 = interp1d(errors0[j, 0, :], xi_list[i]*errors0[j, 1, :]+errors0[j, 2, :], fill_value="extrapolate")
+            x_all_0 = time_records[i]
+            f0_interpolated.append(f0(x_all_0))
+        f0_interpolated = np.asarray(f0_interpolated)
+        f_interpolated_list.append(f0_interpolated)
+
+    # make figure
+    search_radius_const = full_result_list[0].get('search_radius_const')
+    color_list = ['g', 'k', 'r', 'c', 'b']
+    marker_list = ['*', '|', 'x', 'o', '+']
+    fig, axs = plt.subplots(nrows=1, ncols=1, figsize=fig_size)
+    for i in np.arange(len(stats_list)):
+        if xi_list_custom is None:
+            xi_list_custom = xi_list
+
+        if xi_list[i] in xi_list_custom:
+            f0_interpolated = f_interpolated_list[i]
+            f_avg0 = np.sum(f0_interpolated, axis=0) / f0_interpolated.shape[0]  ### axis-0 : trials
+            f_std0 = np.std(f0_interpolated, axis=0)
+
+            x_all_0 = time_records[i]
+            color = color_list[i % len(color_list)]
+            marker = marker_list[i % len(marker_list)]
+
+            result_dict = full_result_list[i]
+            beta = result_dict.get("beta")
+            #if beta is None:
+            #    label0 = result_dict.get("method")
+            #else:
+            #    # label0 = result_dict.get("method") + " ($\\beta=${}, $c'=${:.0f})".format(beta, search_radius_const)
+            #    label0 = result_dict.get("method") + " ($\\beta=${}, $c'= \parallel X \parallel/10^5$)".format(beta)
+
+            #print('methods_list[i]', methods_list[i])
+
+            label0 = methods_list[i][0].replace(" (naive)", "") + " ($\\xi=${:.3f})".format(xi_list[i])
+
+            markers, caps, bars = axs.errorbar(x_all_0, f_avg0, yerr=f_std0,
+                                               fmt=color+'-', marker=marker, label=label0,
+                                               markevery=5, markersize=10)
+            axs.fill_between(x_all_0, f_avg0 - f_std0, f_avg0 + f_std0, facecolor=color, alpha=0.1)
+            axs.set_ylim(ymax=10*np.max(f_avg0))
+            axs.set_yscale('log')
+
+
+    # min_max duration
+    x_all_min_max = []
+    for i in np.arange(len(time_records)):
+        x_all_ALS0 = time_records[i]
+        x_all_min_max.append(max(x_all_ALS0))
+
+    x_all_min_max = min(x_all_min_max)
+    axs.set_xlim(0, x_all_min_max)
+
+
+    [bar.set_alpha(0.5) for bar in bars]
+    # axs.set_ylim(0, np.maximum(np.max(f_OCPDL_avg + f_OCPDL_std), np.max(f_ALS_avg + f_ALS_std)) * 1.1)
+    axs.set_xlabel('Elapsed time (s)', fontsize=15)
+    axs.set_ylabel('Training loss', fontsize=15)
+    data_name = full_result_list[0].get('data_name')
+    title = data_name
+    plt.suptitle(title, fontsize=15)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
+    axs.legend(fontsize=13, loc='upper right')
+    plt.tight_layout()
+    plt.subplots_adjust(0.15, 0.1, 0.9, 0.9, 0.00, 0.00)
+
+    plt.savefig(save_path, bbox_inches='tight')
+
+
+def main(data_type = "MNIST",
+         n_components = 20,
+         xi_list = [0, 0.001, 1, 5, 10],
+         beta_list = [0.5, None],
+         iteration = 200,
+         iter_avg=1,
+         noise =0,
+         plot_only=False,
+         methods_list = ["LR", "MF-LR", "SDL-filt", "SDL-feat", "SDL-conv-filt", "SDL-conv-feat"],
+         folder_name = "SDL_sim3",
+         error_plot_method_list = ["SDL-conv-feat", "SDL-conv-filt"]):
+
     file_name = folder_name + "_" + str(data_type)
 
     if plot_only:
         save_path = "Output_files/" + folder_name + "/results_" + file_name + ".npy"
         results_dict_list = np.load(save_path, allow_pickle=True)
+        #avg_results_list = get_avg_stats(results_dict_list, metric="time_error")
+
+        print(" !!! results_dict_list", len(results_dict_list))
+
+
         for metric in ["Accuracy", "F_score"]:
             plot_accuracy(results_dict_list, metric=metric, ylim=[0,1], beta_list_plot=[None]+beta_list,
                           save_path = "Output_files/" + folder_name + "/plot_accuracy_" + metric + "_" + file_name + ".pdf",
-                          title=data_type)
-            plot_pareto(results_dict_list, metric=metric, ylim=[0,1], beta_list_plot=[None]+beta_list,
+                          title=None)
+
+            plot_pareto(results_dict_list, metric=metric, xlim=[0, 1.02], ylim=[0,0.9], beta_list_plot=[None]+beta_list,
                           save_path = "Output_files/" + folder_name + "/plot_pareto_" + metric + "_" + file_name + ".pdf",
-                          title=data_type)
+                          title=None)
+
+        avg_results_list = get_avg_stats(results_dict_list, metric="time_error")
+        plot_benchmark_errors(avg_results_list,
+                              save_path = "Output_files/" + folder_name + "/plot_error_" + file_name + ".pdf",
+                              method_list = error_plot_method_list,
+                              xi_list_custom = [0.01, 0.1, 1, 5],
+                              fig_size=[6,6])
+
+
     else:
+        covariate_train = None
+        covariate_test = None
+
         if data_type == "fakejob":
-            path1 = "Data/fake_job_postings_v9.csv"
-            data1 = pd.read_csv(path1, delimiter=',')
 
-            path2 = "Data/results_data_description2.csv"
-            data2 = pd.read_csv(path2, delimiter=',')
+            path = "Data/fake_job_postings.csv"
+            data = pd.read_csv(path, delimiter=',')
+            Y = data['fraudulent']
+            print(sum(Y)/len(Y)) # prop : 5%
 
-            d1 = data1['fraud']
-            Y = np.asarray(d1) # indicator of fraud postings
-            Y = Y[np.newaxis,:]
+            path = "Data/results_data_description2.csv"
+            text = pd.read_csv(path, delimiter = ',')
+
+            others = pd.read_csv("Data/fake_job_postings_v9.csv", delimiter=',')
+            covariate = others.get(others.keys()[1:73]) # covariates
+
+            total_variable = list(covariate.keys()) + list(text.keys()) # variable name
+
+            #X = np.hstack((covariate, text))
+            print(Y.shape)
+
+            Y = np.asarray(Y) # indicator of fraud postings
             print('Y.shape', Y.shape)
-            print('number of fraud postings:', np.sum(Y))
-            print('ratio of fraud postings:', np.sum(Y)/Y.shape[1])
 
-            d2 = data1.get(data1.keys()[1:73]) # covariates
-            d3 = data1.get(data1.keys()[73:]) # word frequencies
+            text = text.values
+            text = text - np.min(text) # word frequency array
+            print('text.shape', text.shape) # words x docs
 
-            #X = d3.values
-            X = data2.values
-            X = X - np.min(X) # word frequency array
-            X = X.T
-            print('X.shape', X.shape) # words x docs
+            covariate = covariate.values
+            covariate = covariate - np.min(covariate)
+            print('covariate.shape', covariate.shape)
 
-            X_train, X_test, Y_train, Y_test = train_test_split(X.T, Y.T, test_size=0.2)
-            X_train, X_test = X_train.T, X_test.T
-            Y_train, Y_test = Y_train.T, Y_test.T
-            print('X_train.shape', X_train.shape)
-            print('Y_train.shape', Y_train.shape)
-            print('X_test.shape', X_test.shape)
-            print('Y_test.shape', Y_test.shape)
-            print('number of fraud postings in Y_test:', np.sum(Y_test))
+            np.random.seed(1)
+            Y_train, Y_test, text_train, text_test, covariate_train, covariate_test = train_test_split(Y, text, covariate,
+                                                                                                       test_size = 0.2)
+            print('ratio of fraud postings in train set:', np.sum(Y_train)/Y_train.shape)
+            print('ratio of fraud postings in test set:', np.sum(Y_test)/Y_test.shape)
 
+            text_train, text_test = text_train.T, text_test.T
+            covariate_train, covariate_test = covariate_train.T, covariate_test.T
+            Y_train, Y_test = Y_train[np.newaxis,:], Y_test[np.newaxis,:]
+
+            X0_train = np.vstack([covariate_train, text_train]) # for logistic
+            X0_test = np.vstack([covariate_test, text_test])
+
+            X_train, X_test = text_train, text_test
+
+            print(Y_train.shape)
+            print(X_train.shape)
+            print(text_train.shape)
+            print(covariate_train.shape)
+
+            covariate_train = None ############
+            covariate_test = None #############
 
         if data_type == "pneumonia":
             print('fetching Pneumonia X-ray dataset ...')
-            IMAGE_SIZE = [200, 200]  # low performance with size [50, 50]
-            subsample_ratio = 10
+
+            IMAGE_SIZE = [100, 100]  # low performance with size [50, 50]
+            subsample_ratio = 1
 
             # Load training set for optimal parameter (only for Lasso or Ridge)
             train_path_normal = "Data/chest_xray/train/NORMAL/"
@@ -996,6 +1174,7 @@ def main(data_type = "MNIST",
             X_train, Y_train, train_n0, train_n1 = process_path(train_path_normal, train_path_pneumonia, IMAGE_SIZE=IMAGE_SIZE,
                                                                 vector_label=False, subsample_ratio=subsample_ratio)
 
+            X_train /= np.max(X_train)
             # dim(X) = p x n
             # dim(Y) = 1 x n
 
@@ -1007,9 +1186,10 @@ def main(data_type = "MNIST",
             X_test, Y_test, test_n0, test_n1 = process_path(test_path_normal, test_path_pneumonia, IMAGE_SIZE=IMAGE_SIZE,
                                                                 vector_label=False, subsample_ratio=subsample_ratio)
 
+            X_test /= np.max(X_test)
+
         if data_type == "MNIST":
             print('fetching MNIST ...')
-            '''
             # Load data from https://www.openml.org/d/554
             X, y = fetch_openml('mnist_784', version=1, return_X_y=True)
             # X = X.values  ### Uncomment this line if you are having type errors in plotting. It is loading as a pandas dataframe, but our indexing is for numpy array.
@@ -1018,10 +1198,10 @@ def main(data_type = "MNIST",
             print('X.shape', X.shape)
             print('y.shape', y.shape)
 
-
+            '''
             Each row of X is a vectroization of an image of 28 x 28 = 784 pixels.
             The corresponding row of y holds the true class label from {0,1, .. , 9}.
-
+            '''
 
             n=500
             noise_std = 0.5
@@ -1031,44 +1211,55 @@ def main(data_type = "MNIST",
                                                                                                                         digits_X = ['2', '5'],
                                                                                                                         digits_Y = ['4', '7'],
                                                                                                                         noise_std = noise_std,
-                                                                                                                        random_seed = 1)
+                                                                                                            random_seed = 1)
 
-        '''
-
-        X_train, X_test, Y_train, Y_test, W_true, W_true_Y, H_true, H_train, H_test, Beta_true = sim_data_gen_MNIST(r = [int(n_components/2), int(n_components/2)],
-                                                                                                                    n = 1000,
-                                                                                                                    digits_X = ['2', '5'],
-                                                                                                                    digits_Y = ['4', '7'],
-                                                                                                                    noise_std = noise,
-                                                                                                                    random_seed = 1)
         data = [X_train, X_test, Y_train, Y_test]
+        data_aux = [covariate_train, covariate_test]
+        if covariate_train is None:
+            data_aux = None
 
-        results_dict_list = run_methods(data, n_components=n_components,
+        results_dict_list = run_methods(data,
+                                        data_aux = data_aux,
+                                        n_components=n_components,
                                         #xi_list = [0, 0.001, 1,  3, 5, 10],
                                         xi_list = xi_list,
                                         beta_list = beta_list,
                                         iteration = iteration,
                                         iter_avg = iter_avg,
-                                        save_path = "Output_files/" + folder_name + "/results_noise_" + str(noise*10) + "_" + file_name + ".npy")
+                                        methods_list = methods_list,
+                                        save_path = "Output_files/" + folder_name + "/results_" + file_name + ".npy")
 
         #print('results_dict_list', results_dict_list)
 
         for metric in ["Accuracy", "F_score"]:
             plot_accuracy(results_dict_list, metric=metric, ylim=[0,1], beta_list_plot=[None]+beta_list,
-                          save_path = "Output_files/" + folder_name + "/plot_noise_" + str(noise*10) + "_accuracy_" + metric + "_" + file_name + ".pdf",
+                          save_path = "Output_files/" + folder_name + "/plot_accuracy_" + metric + "_" + file_name + ".pdf",
                           title=data_type)
 
-            plot_pareto(results_dict_list, metric=metric, ylim=[0,1], beta_list_plot=[None]+beta_list,
-                          save_path = "Output_files/" + folder_name + "/plot_noise_" + str(noise*10) + "_pareto_" + metric + "_" + file_name + ".pdf",
+            plot_pareto(results_dict_list, metric=metric, xlim=[0,1.1], ylim=[0,1], beta_list_plot=[None]+beta_list,
+                          save_path = "Output_files/" + folder_name + "/plot_pareto_" + metric + "_" + file_name + ".pdf",
                           title=data_type)
+
+        avg_results_list = get_avg_stats(results_dict_list, metric="time_error")
+        plot_benchmark_errors(avg_results_list,
+                              save_path = "Output_files/" + folder_name + "/plot_error_" + metric + "_" + file_name + ".pdf",
+                              #method_list = error_plot_method_list,
+                              fig_size=[7,8])
 
 
 if __name__ == '__main__':
+
     main(data_type="MNIST",
          n_components=2,
-         noise = 1,
+         #xi_list = [10],
          xi_list = [0, 0.1, 1, 5, 10],
-         beta_list = [0.5],
-         iteration = 200,
-         iter_avg=5,
-         plot_only=False)
+         beta_list = [1],
+         iteration = 50,
+         noise = 0.5,
+         iter_avg=2,
+         plot_only=False,
+         methods_list = ["LR", "MF-LR", "SDL-filt", "SDL-feat", "SDL-conv-filt", "SDL-conv-feat"],
+         #methods_list = ["SDL-feat"],
+         #methods_list = ["SDL-filt"],
+         folder_name = "SDL_sim_J",
+         error_plot_method_list = ["SDL-feat"])
