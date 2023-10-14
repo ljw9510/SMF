@@ -1,2 +1,2 @@
-# SDL
-Supervised Dictionary Learning 
+# SMF
+Supervised Matrix Factorization
