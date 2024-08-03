@@ -1,9 +1,5 @@
-<p align="center">
-<img width="600" src="https://github.com/HanbaekLyu/NDL_paper/blob/main/Figures/NDL_logo1.png?raw=true" alt="logo">
-</p>
-
-
-## Network Dictionary Learning (repository for paper)
+# Supervised Matrix Factorization #
+## for simultaneous low-rank compressio and classification ##
 
 <br/> This repository contains the scripts that generate the main figures reported in the paper: <br/>
 
