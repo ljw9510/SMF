@@ -40,12 +40,12 @@ Then copy & paste the ipynb notebook files into the main folder. Run each Jupyte
   
 ## Authors
 
-* **Joowon Lee** - *Initial work* - [Website](https://www.math.ucla.edu/~ykureh/)
+* **Joowon Lee** - *Initial work* - [Website](https://stat.wisc.edu/staff/lee-joowon/)
 * **Hanbaek Lyu** - *Initial work* - [Website](https://hanbaeklyu.com)
-* **Weixin Yao** - *Initial work* - [Website](https://hanbaeklyu.com)
+* **Weixin Yao** - *Initial work* - [Website](https://faculty.ucr.edu/~weixiny/)
 
 ## Code Contributors 
-* **Agam Goyal**
+* **Agam Goyal** - [Website](https://agoyal0512.github.io)
 * **Yee Wei**
 * (Add yours if you make contributions!)
 
