@@ -1,5 +1,5 @@
 # Supervised Matrix Factorization #
-## for simultaneous low-rank compressio and classification ##
+## for simultaneous low-rank compression and classification ##
 
 <br/> This repository contains the scripts that generate the main figures reported in the paper: <br/>
 
