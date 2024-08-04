@@ -46,7 +46,7 @@ Then copy & paste the ipynb notebook files into the main folder. Run each Jupyte
 
 ## Code Contributors 
 * **Agam Goyal** - [Website](https://agoyal0512.github.io)
-* **Yi Wei**
+* **Yi Wei** - [Website](https://yee-millennium.github.io)
 * (Add yours if you make contributions!)
 
 ## License
