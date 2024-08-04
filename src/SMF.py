@@ -310,7 +310,7 @@ class SMF_BCD():
 
     def fit(self,
             option = "filter", #or "feature"
-            threshhold = 0.5,
+            threshold = 0.5,
             iter=100,
             beta=1,
             dict_update_freq=1,
