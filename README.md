@@ -51,5 +51,5 @@ Then copy & paste the ipynb notebook files into the main folder. Run each Jupyte
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE.md](https://github.com/ljw9510/SMF/tree/main/LICENSE.md) file for details
+This project is licensed under the MIT License - see the [LICENSE.md](https://github.com/ljw9510/SMF/blob/main/LICENSE) file for details
 
