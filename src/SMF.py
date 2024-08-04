@@ -580,15 +580,15 @@ class SMF_BCD():
         # Final accuracy check
         if X[1].shape[0] == 1:
             self.validation(result_dict = self.result_dict, prediction_method_list=prediction_method_list)
-            threshold = self.result_dict.get('Opt_threshold')
-            AUC = self.result_dict.get('AUC')
-            print('!!! FINAL [threshold, AUC] = ', [np.round(threshold,3), np.round(AUC,3)])
+            # threshold = self.result_dict.get('Opt_threshold')
+            # AUC = self.result_dict.get('AUC')
+            # print('!!! FINAL [threshold, AUC] = ', [np.round(threshold,3), np.round(AUC,3)])
         else:
             accuracy_result = self.validation_multi(result_dict=self.result_dict, 
                                                     prediction_method_list=prediction_method_list, threshhold=threshhold)
-            confusion_matrix = accuracy_result.get('confusion_mx')
-            ACC = accuracy_result.get('Accuracy')
-            print('!!! FINAL [confusion_mx, Accuracy] = ', [confusion_matrix, np.round(ACC, 3)])
+            # confusion_matrix = accuracy_result.get('confusion_mx')
+            # ACC = accuracy_result.get('Accuracy')
+            # print('!!! FINAL [confusion_mx, Accuracy] = ', [confusion_matrix, np.round(ACC, 3)])
         return self.result_dict
 
     def validation(self,
