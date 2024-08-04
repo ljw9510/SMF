@@ -191,10 +191,11 @@ class SMF_BCD():
         #if not self.full_dim:
         A = H @ H.T
 
-        W1 = W0[0].copy()
+        W1 = W0[0].copy()  ### Dictionary
         i = 0
         dist = 1
         idx = np.arange(X[0].shape[0])
+
         while (i < sub_iter) and (dist > stopping_diff):
             W1_old = W1.copy()
 
@@ -208,7 +209,11 @@ class SMF_BCD():
 
             # P = probability matrix, same shape as X1
             D = W0[1] @ H1_ext
-            P = 1 / (1 + np.exp(-D))
+            P = np.random.rand(D.shape[0], D.shape[1])
+            for i in range(D.shape[1]):
+                # P[:, i] = np.exp(D[:, i]) / (1 + np.sum(np.exp(D[:, i])))
+                max_i = np.max(D[:, i])
+                P[:, i] = np.exp(D[:, i] - max_i) / (np.exp(-max_i) + np.sum(np.exp(D[:, i] - max_i)))                
 
             if not self.full_dim:
                 grad_MF = (W1 @ H - X[0]) @ H.T
@@ -219,7 +224,9 @@ class SMF_BCD():
                 W1 -= (1 / (((i + 10) ** (0.5)) * (np.trace(A) + 1))) * grad
 
             if r is not None:  # usual sparse coding without radius restriction
-                d = np.linalg.norm(W1 - W0[0], 2)
+                # contains_nan = np.isnan(W1 - W0[0]).any()
+                # print("Matrix contains NaN:", contains_nan)
+                d = np.linalg.norm(W1 - W0[0], ord = 2)
                 W1 = W0[0] + (r / max(r, d)) * (W1 - W0[0])
             W0[0] = W1
 
@@ -232,8 +239,6 @@ class SMF_BCD():
             # H1_old = H1
             i = i + 1
             # print('!!!! i', i)  # mostly the loop finishes at i=1 except the first round
-
-
         return W1
 
     def update_code_joint_logistic(self, X, W, H0, r,
@@ -305,6 +310,7 @@ class SMF_BCD():
 
     def fit(self,
             option = "filter", #or "feature"
+            threshhold = 0.5,
             iter=100,
             beta=1,
             dict_update_freq=1,
@@ -363,15 +369,12 @@ class SMF_BCD():
                                                      r=search_radius, nonnegativity=self.nonnegativity[1],
                                                      a1=self.L1_reg[1], a2=self.L2_reg[1],
                                                      subsample_size = None)
-
                     W[0] /= np.linalg.norm(W[0])
-
 
                 # Code Update
                 H = update_code_within_radius(X[0], W[0], H, r=search_radius,
                                             a1=self.L1_reg[0], a2=self.L2_reg[0],
                                             nonnegativity=self.nonnegativity[0])
-
 
                 # Regression Parameters Update
                 X0_comp = W[0].T @ X[0]
@@ -379,9 +382,37 @@ class SMF_BCD():
                     #print('np.linalg.norm(X0_comp)', np.linalg.norm(X0_comp))
                     #print('np.linalg.norm(self.X_auxiliary)', np.linalg.norm(self.X_auxiliary))
                     X0_comp = np.vstack((X0_comp, self.X_auxiliary))
-                clf = LogisticRegression(random_state=0).fit(X0_comp.T, self.X[1][0,:])
-                W[1][0,1:] = clf.coef_[0]
-                W[1][0,0] = clf.intercept_[0]
+                
+                # print(f"This is X[1].shape[0]: {X[1].shape[0]}")
+                if X[1].shape[0] != 1:
+                    label_vec = np.copy(X[1])
+                    for i in range(1, X[1].shape[0]):
+                        label_vec[i, :][label_vec[i, :] == 1] = i+1
+                    label_vec = np.sum(label_vec, axis=0)
+                    clf = LogisticRegression(random_state=0, max_iter=300).fit(X0_comp.T, label_vec)
+                    # clf is of shape [X[1].shape[0]+1, W[0].shape[1]] 
+                    # print(f"Check shape of coef: {X[1].shape[0]} and {W[0].shape[1]}")
+                    coef = np.zeros((X[1].shape[0], W[0].shape[1]))
+                    for row in range(X[1].shape[0]):
+                        coef[row] = clf.coef_[row+1] - clf.coef_[0]
+                    intercepts = np.zeros(X[1].shape[0])
+                    for i in range(X[1].shape[0]):
+                        intercepts[i] = clf.intercept_[i+1] - clf.intercept_[0]
+                    W[1][:, 1:] = coef
+                    W[1][:, 0] = intercepts
+                    # W[1] = self.update_beta_joint_logistic(X, H, W, stopping_diff=0.0001,
+                    #                                  sub_iter = 5,
+                    #                                  r=search_radius, nonnegativity=self.nonnegativity[1],
+                    #                                  a1=self.L1_reg[1], a2=self.L2_reg[1],
+                    #                                  subsample_size = None)
+                elif X[1].shape[0] == 1:
+                    label_vec = X[1].flatten()
+                    # print(f"label_vec's shape: {label_vec.shape}")
+                    clf = LogisticRegression(random_state=0).fit(X0_comp.T, label_vec)
+                    # print(f"coef's shape: {clf.coef_.shape}")
+                    # print(f"W[1]'s shape: {W[1].shape}")
+                    W[1][0,1:] = clf.coef_[0]
+                    W[1][0,0] = clf.intercept_[0]
 
             elif option == "feature":
                 if (step % dict_update_freq == 0):
@@ -429,72 +460,135 @@ class SMF_BCD():
 
 
             if (step % 10) == 0:
-                if if_compute_recons_error:
-                    # print the error every 50 iterations
-                    if self.full_dim:
-                        error_data = np.linalg.norm((X[0] - H).reshape(-1, 1), ord=2)**2
-                    else:
-                        error_data = np.linalg.norm((X[0] - W[0] @ H).reshape(-1, 1), ord=2)**2
-                    rel_error_data = error_data / np.linalg.norm(X[0].reshape(-1, 1), ord=2)**2
+                if X[1].shape[0] == 1:
+                    if if_compute_recons_error:
+                        # print the error every 50 iterations
+                        if self.full_dim:
+                            error_data = np.linalg.norm((X[0] - H).reshape(-1, 1), ord=2)**2
+                        else:
+                            error_data = np.linalg.norm((X[0] - W[0] @ H).reshape(-1, 1), ord=2)**2
+                        rel_error_data = error_data / np.linalg.norm(X[0].reshape(-1, 1), ord=2)**2
 
-                    X0_comp = W[0].T @ X[0]
-                    X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
-                    if self.d3>0:
-                        X0_ext = np.vstack((X0_ext, self.X_auxiliary))
-                    P_pred = np.matmul(W[1], X0_ext)
-                    P_pred = 1 / (np.exp(-P_pred) + 1)
-                    # print('!!! error norm', np.linalg.norm(X[1][0, :]-P_pred[0,:])/X[1].shape[1])
-                    fpr, tpr, thresholds = metrics.roc_curve(X[1][0, :], P_pred[0,:], pos_label=None)
-                    mythre = thresholds[np.argmax(tpr - fpr)]
-                    myauc = metrics.auc(fpr, tpr)
-                    self.result_dict.update({'Training_threshold':mythre})
-                    self.result_dict.update({'Training_AUC':myauc})
-                    print('--- Training --- [threshold, AUC] = ', [np.round(mythre,3), np.round(myauc,3)])
-                    error_label = np.sum(np.log(1+np.exp(W[1] @ X0_ext))) - X[1] @ (W[1] @ X0_ext).T
-                    error_label = error_label[0][0]
+                        X0_comp = W[0].T @ X[0]
+                        X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
+                        if self.d3>0:
+                            X0_ext = np.vstack((X0_ext, self.X_auxiliary))
+                        P_pred = np.matmul(W[1], X0_ext)
+                        P_pred = 1 / (np.exp(-P_pred) + 1)
+                        # print('!!! error norm', np.linalg.norm(X[1][0, :]-P_pred[0,:])/X[1].shape[1])
+                        fpr, tpr, thresholds = metrics.roc_curve(X[1][0, :], P_pred[0,:], pos_label=None)
+                        mythre = thresholds[np.argmax(tpr - fpr)]
+                        myauc = metrics.auc(fpr, tpr)
+                        self.result_dict.update({'Training_threshold':mythre})
+                        self.result_dict.update({'Training_AUC':myauc})
+                        print('--- Training --- [threshold, AUC] = ', [np.round(mythre,3), np.round(myauc,3)])
+                        error_label = np.sum(np.log(1+np.exp(W[1] @ X0_ext))) - X[1] @ (W[1] @ X0_ext).T
+                        error_label = error_label[0][0]
 
-                    total_error_new = error_label + self.xi * error_data
+                        total_error_new = error_label + self.xi * error_data
 
-                    time_error = np.append(time_error, np.array([[elapsed_time, error_data, error_label]]), axis=0)
-                    print('--- Iteration %i: Training loss --- [Data, Label, Total] = [%f.3, %f.3, %f.3]' % (step, error_data, error_label, total_error_new))
+                        time_error = np.append(time_error, np.array([[elapsed_time, error_data, error_label]]), axis=0)
+                        print('--- Iteration %i: Training loss --- [Data, Label, Total] = [%f.3, %f.3, %f.3]' % (step, error_data, error_label, total_error_new))
 
-                    self.result_dict.update({'Relative_reconstruction_loss (training)': rel_error_data})
-                    self.result_dict.update({'Classification_loss (training)': error_label})
-                    self.result_dict.update({'time_error': time_error.T})
+                        self.result_dict.update({'Relative_reconstruction_loss (training)': rel_error_data})
+                        self.result_dict.update({'Classification_loss (training)': error_label})
+                        self.result_dict.update({'time_error': time_error.T})
 
-                    # stopping criterion
-                    #if (total_error > 0) and (total_error_new > 1.1 * total_error):
-                    #    print("Early stopping: training loss increased")
-                    #    self.result_dict.update({'iter': step})
-                    #    break
-                    #else:
-                    #    total_error = total_error_new
+                        # stopping criterion
+                        if (total_error > 0) and (total_error_new > 1.1 * total_error):
+                            print("Early stopping: training loss increased")
+                            self.result_dict.update({'iter': step})
+                            break
+                        else:
+                            total_error = total_error_new
+                    if if_validate and (step>1):
+                        self.validation(result_dict = self.result_dict,
+                                        prediction_method_list=prediction_method_list,
+                                        verbose=True)
+                        threshold = self.result_dict.get('Opt_threshold')
+                        ACC = self.result_dict.get('Accuracy')
+                        if ACC>0.99:
+                            # terminate the training as soon as AUC>0.9 in order to avoid overfitting
+                            print('!!! --- Validation (Stopped) --- [threshold, ACC] = ', [np.round(threshold,3), np.round(ACC,3)])
+                            break
+                else:
+                    if if_compute_recons_error:
+                        # print the error every 50 iterations
+                        if self.full_dim:
+                            error_data = np.linalg.norm((X[0] - H).reshape(-1, 1), ord=2)**2
+                        else:
+                            error_data = np.linalg.norm((X[0] - W[0] @ H).reshape(-1, 1), ord=2)**2
+                        rel_error_data = error_data / np.linalg.norm(X[0].reshape(-1, 1), ord=2)**2
 
+                        X0_comp = W[0].T @ X[0]
+                        X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
+                        if self.d3>0:
+                            X0_ext = np.vstack((X0_ext, self.X_auxiliary))
 
-                if if_validate and (step>1):
-                    self.validation(result_dict = self.result_dict,
-                                    prediction_method_list=prediction_method_list,
-                                    verbose=True)
-                    threshold = self.result_dict.get('Opt_threshold')
-                    ACC = self.result_dict.get('Accuracy')
-                    if ACC>0.99:
-                        # terminate the training as soon as AUC>0.9 in order to avoid overfitting
-                        print('!!! --- Validation (Stopped) --- [threshold, ACC] = ', [np.round(threshold,3), np.round(ACC,3)])
-                        break
+                        error_label = np.sum(1 + np.sum(np.exp(W[1]@X0_ext), axis=0)) - np.trace(X[1].T @ W[1] @ X0_ext)
+                        total_error_new = error_label + self.xi * error_data
+            
+                        time_error = np.append(time_error, np.array([[elapsed_time, error_data, error_label]]), axis=0)
+                        print('--- Iteration %i: Training loss --- [Data, Label, Total] = [%f.3, %f.3, %f.3]' % (step, error_data, error_label, total_error_new))
+
+                        self.result_dict.update({'Relative_reconstruction_loss (training)': rel_error_data})
+                        self.result_dict.update({'Classification_loss (training)': error_label})
+                        self.result_dict.update({'time_error': time_error.T})
+
+                        # stopping criterion
+                        if (total_error > 0) and (total_error_new > 1.1 * total_error):
+                            print("Early stopping: training loss increased")
+                            self.result_dict.update({'iter': step})
+                            break
+                        else:
+                            total_error = total_error_new
+                    if if_validate and (step>1):
+                        accuracy_result = self.validation_multi(result_dict = self.result_dict,
+                                        prediction_method_list=prediction_method_list,
+                                        verbose=True, threshhold=threshhold)
+                        confusion_matrix = accuracy_result.get('confusion_mx')
+                        ACC = accuracy_result.get('Accuracy')
+                        if ACC>0.99:
+                            # terminate the training as soon as AUC>0.9 in order to avoid overfitting
+                            print('!!! --- Validation (Stopped) --- [confusion_mx, Accuracy] = ', [confusion_matrix, np.round(ACC, 3)])
+                            break
 
         ### fine-tune beta
         X0_comp = W[0].T @ X[0]
         if self.X_auxiliary is not None:
-            X0_comp = np.vstack((X0_comp, self.X_auxiliary[:,:]))
-        clf = LogisticRegression(random_state=0).fit(X0_comp.T, self.X[1][0,:])
-        W[1][0,1:] = clf.coef_[0]
-        W[1][0,0] = clf.intercept_[0]
+                X0_comp = np.vstack((X0_comp, self.X_auxiliary))
+        if X[1].shape[0] != 1:
+            label_vec = np.copy(X[1])
+            for i in range(1, X[1].shape[0]):
+                label_vec[i, :][label_vec[i, :] == 1] = i+1
+            label_vec = np.sum(label_vec, axis=0)
+            clf = LogisticRegression(random_state=0).fit(X0_comp.T, label_vec)
+            coef = np.zeros((X[1].shape[0], W[0].shape[1]))
+            for row in range(X[1].shape[0]):
+                coef[row] = clf.coef_[row+1] - clf.coef_[0]
+            intercepts = np.zeros(X[1].shape[0])
+            for i in range(X[1].shape[0]):
+                intercepts[i] = clf.intercept_[i+1] - clf.intercept_[0]
+            W[1][:, 1:] = coef
+            W[1][:, 0] = intercepts
+        elif X[1].shape[0] == 1:
+            label_vec = X[1].flatten()
+            clf = LogisticRegression(random_state=0).fit(X0_comp.T, label_vec)
+            W[1][0,1:] = clf.coef_[0]
+            W[1][0,0] = clf.intercept_[0]
 
-        self.validation(result_dict = self.result_dict, prediction_method_list=prediction_method_list)
-        #threshold = self.result_dict.get('Opt_threshold')
-        #AUC = self.result_dict.get('AUC')
-        #print('!!! FINAL [threshold, AUC] = ', [np.round(threshold,3), np.round(AUC,3)])
-
+        # Final accuracy check
+        if X[1].shape[0] == 1:
+            self.validation(result_dict = self.result_dict, prediction_method_list=prediction_method_list)
+            threshold = self.result_dict.get('Opt_threshold')
+            AUC = self.result_dict.get('AUC')
+            print('!!! FINAL [threshold, AUC] = ', [np.round(threshold,3), np.round(AUC,3)])
+        else:
+            accuracy_result = self.validation_multi(result_dict=self.result_dict, 
+                                                    prediction_method_list=prediction_method_list, threshhold=threshhold)
+            confusion_matrix = accuracy_result.get('confusion_mx')
+            ACC = accuracy_result.get('Accuracy')
+            print('!!! FINAL [confusion_mx, Accuracy] = ', [confusion_matrix, np.round(ACC, 3)])
         return self.result_dict
 
     def validation(self,
@@ -762,7 +856,57 @@ class SMF_BCD():
         self.result_dict.update({'Y_hat': Y_hat})
 
         return P_pred, H, Y_hat
+    
+    def validation_multi(self,
+                         threshhold = 0.5, 
+                    result_dict=None,
+                    X_test = None,
+                    X_test_aux = None,
+                    sub_iter=100,
+                    verbose=False,
+                    stopping_grad_ratio=0.0001,
+                    prediction_method_list = ['filter', 'naive', 'alt', 'exhaustive']):
+        '''
+        Given input X = [data, label] and initial loading dictionary W_ini, find W = [dict, beta] and code H
+        by two-block coordinate descent: [dict, beta] --> H, H--> [dict, beta]
+        Use Logistic MF model
+        '''
+        if result_dict is None:
+            result_dict = self.result_dict
+        if X_test is None:
+            X_test = self.X_test
+        if X_test_aux is None:
+            X_test_aux = self.X_test_aux
 
+        test_X = X_test[0]
+        test_Y = X_test[1]
+
+        W = result_dict.get('loading')
+        beta = W[1].T
+        
+        for pred_type in prediction_method_list:
+            print('!!! pred_type', pred_type)
+            if pred_type == 'filter':
+                X0_comp = W[0].T @ X_test[0]
+                X0_ext = np.vstack((np.ones(X_test[1].shape[1]), X0_comp))
+                if self.d3>0:
+                    X0_ext = np.vstack((X0_ext, X_test_aux))
+                exp_numerator = np.matmul(W[1], X0_ext)
+                exp_numerator = np.exp(exp_numerator)
+                normalizer = np.zeros(X_test[0].shape[1])
+                for i in range(len(normalizer)):
+                    normalizer[i] = 1 + np.sum(exp_numerator[:, i])
+                P_pred = np.copy(exp_numerator)
+                for i in range(X_test[0].shape[1]):
+                    P_pred[:, i] = P_pred[:, i] / normalizer[i]
+                
+                accuracy_result = multiclass_accuracy_metrics(Y_test=self.X_test[1], 
+                                                            P_pred=P_pred, threshhold=threshhold)
+                if verbose == True:
+                    confusion_matrix = accuracy_result.get('confusion_mx')
+                    ACC = accuracy_result.get('Accuracy')
+                    print('!!! --- Validation --- [confusion_mx, Accuracy] = ', [confusion_matrix, np.round(ACC, 3)])
+        return accuracy_result
 
 
 class SMF_LPGD():
@@ -1604,3 +1748,32 @@ def compute_accuracy_metrics(y_test, y_pred, pred_type=None):
             result_dict[key_new] = result_dict.pop(key)
 
     return result_dict
+
+def multiclass_accuracy_metrics(Y_test, P_pred, threshhold = 0.5, class_labels=None, use_opt_threshold=False):
+    '''
+    y_test = multiclass one-hot encoding  labels 
+    Q = predicted probability for y_test
+    compuate various classification accuracy metrics
+    '''
+    Y_test_T = Y_test.T
+    P_pred_T = P_pred.T
+    results_dict = {}
+    y_test = []
+    y_pred = []
+    
+    for i in np.arange(Y_test_T.shape[0]):
+        for j in np.arange(Y_test_T.shape[1]):
+            if Y_test_T[i,j] == 1:
+                y_test.append(1)
+            else:
+                y_test.append(0)
+            if P_pred_T[i,j] >= threshhold:
+                y_pred.append(1)
+            else:
+                y_pred.append(0)
+            
+    confusion_mx = metrics.confusion_matrix(y_test, y_pred)
+    results_dict.update({'confusion_mx':confusion_mx})
+    results_dict.update({'Accuracy':np.trace(confusion_mx)/np.sum(np.sum(confusion_mx))})
+    
+    return results_dict
