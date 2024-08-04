@@ -15,7 +15,7 @@ from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
 import scipy.sparse as sp
-from sklearn.decomposition import SparseCoder
+from sklearn.decomposition import SparseCoder, PCA, TruncatedSVD
 from sklearn.linear_model import LogisticRegression
 from scipy.linalg import block_diag
 
@@ -773,7 +773,7 @@ class SMF_LPGD():
     # “Exponentially Convergent Algorithms for Supervised Matrix Factorization“, NeurIPS 2023
     # https://papers.nips.cc/paper_files/paper/2023/hash/f2c80b3c9cf8102d38c4b21af25d9740-Abstract-Conference.html
     # Simultaneous dimension reduction and classification
-    # (Nonnegative)MF + 2-layer NN classifier 
+    # (Nonnegative)MF + 2-layer NN classifier
     # Model: Data (X) \approx Dictionary (W) @ Code (H)
     #        Label (Y) \approx logit(Beta.T @ W.T @ X) (for SMF-W)
     #        Label (Y) \approx logit(Beta.T @ H) (for SMF-H)
@@ -828,7 +828,7 @@ class SMF_LPGD():
         self.result_dict.update({'L2_reg' : self.L2_reg})
         self.result_dict.update({'n_components' : self.n_components})
 
-
+    """
     def rank_r_projection(self, X, rank):
         svd = TruncatedSVD(n_components=rank, n_iter=7, random_state=42)
         X_reduced = svd.fit_transform(X) #
@@ -841,11 +841,12 @@ class SMF_LPGD():
         v0 = vh[:r,:]
         recons = u0 @ np.diag(s0) @ v0
         return u0, s0, v0, recons
+    """
 
     def unfactored2factored(self, A, B, Beta1, rank, option='filter'): # or 'feature')
         if option == 'filter':
             C = np.hstack((A,B))
-            u0, s0, v0, recons = self.rank_r_projection(C, rank=rank)
+            u0, s0, v0, recons = rank_r_projection(C, rank=rank)
             s = np.diag(s0)
             W0 = u0 @ np.sqrt(s)
             W_norm = np.linalg.norm(W0)
@@ -857,7 +858,7 @@ class SMF_LPGD():
 
         elif option == 'feature':
             C = np.vstack((A,B))
-            u0, s0, v0, recons = self.rank_r_projection(C, rank=rank)
+            u0, s0, v0, recons = rank_r_projection(C, rank=rank)
             s = np.diag(s0)
             H = np.sqrt(s) @ v0
             D = u0 @ np.sqrt(s)
@@ -910,14 +911,14 @@ class SMF_LPGD():
         # singular value projection on rank-r matrices
         if option == 'filter':
             C = np.hstack((A, B))
-            u0, s0, v0, recons = self.rank_r_projection(C, rank=self.n_components)
+            u0, s0, v0, recons = rank_r_projection(C, rank=self.n_components)
             A_new = recons[:, :A.shape[1]]
             B_new = recons[:, A.shape[1]:]
             ### TODO: Maybe add column normalization step for W
 
         elif option == 'feature':
             C = np.vstack((A, B))
-            u0, s0, v0, recons = self.rank_r_projection(C, rank=self.n_components)
+            u0, s0, v0, recons = rank_r_projection(C, rank=self.n_components)
             A_new = recons[:A.shape[0], :]
             B_new = recons[A.shape[0]:, :]
 
@@ -953,7 +954,7 @@ class SMF_LPGD():
 
         # singular value projection on rank-r matrices
         C = np.vstack((A, B))
-        u0, s0, v0, recons = self.rank_r_projection(C, rank=self.n_components)
+        u0, s0, v0, recons = rank_r_projection(C, rank=self.n_components)
         A_new = recons[:A.shape[0], :]
         B_new = recons[A.shape[0]:, :]
 
@@ -966,12 +967,12 @@ class SMF_LPGD():
             dict_update_freq=1,
             subsample_size=None,
             subsample_ratio_code=None,
-            search_radius_const=1000,
+            stepsize=0.01,
             if_compute_recons_error=False,
             update_nuance_param=False,
             if_validate=False,
             fine_tune_beta = False,
-            SDL_option = 'filter',
+            option = 'filter',
             prediction_method_list=['filter']): # or 'feature'
         '''
         Given input X = [data, label] and initial loading dictionary W_ini, find W = [dict, beta] and code H
@@ -994,10 +995,10 @@ class SMF_LPGD():
         self.result_dict.update({'dict_update_freq' : dict_update_freq})
 
         # set up unfactored variable
-        if SDL_option == 'filter':
+        if option == 'filter':
             A = W[0] @ W[1][:,1:1+r].T
             B = W[0] @ H
-        elif SDL_option == 'feature':
+        elif option == 'feature':
             A = W[1][:,1:1+r] @ H
             B = W[0] @ H
 
@@ -1010,10 +1011,10 @@ class SMF_LPGD():
             start = time.time()
 
             # search_radius = search_radius_const * (float(step + 10)) ** (-beta) / np.log(float(step + 2))
-            search_radius = search_radius_const * (float(step + 10)) ** (-beta)
+            stepsize = stepsize * (float(step + 10)) ** (-beta)
             #print('search_radius', search_radius)
             # search_radius = 0.0001
-            A, B, Beta1 = self.step_SVP(A, B, Beta1, tau=search_radius, nu=0, option=SDL_option)
+            A, B, Beta1 = self.step_SVP(A, B, Beta1, tau=stepsize, nu=0, option=option)
 
             #print('Beta1', Beta1)
             end = time.time()
@@ -1021,7 +1022,7 @@ class SMF_LPGD():
 
             if (step % 10) == 0:
                 if if_compute_recons_error:
-                    W, H = self.unfactored2factored(A, B, Beta1, rank=self.n_components, option=SDL_option)
+                    W, H = self.unfactored2factored(A, B, Beta1, rank=self.n_components, option=option)
                     #W /= np.linalg.norm(W[0])
                     #H *= np.linalg.norm(W[0])
                     #print('Beta', W[1])
@@ -1032,14 +1033,14 @@ class SMF_LPGD():
 
                     print('*** rel_error_data train', rel_error_data)
 
-                    if SDL_option == 'filter':
+                    if option == 'filter':
                         X0_comp = W[0].T @ X[0]
                         X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
                         if self.d3>0:
                             X0_ext = np.vstack((X0_ext, self.X_auxiliary))
 
 
-                    elif SDL_option == 'feature':
+                    elif option == 'feature':
 
                         X0_ext = np.vstack((np.ones(X[1].shape[1]), H))
                         if self.d3>0:
@@ -1089,7 +1090,7 @@ class SMF_LPGD():
 
                 if if_validate and (step>1):
                     self.validation(result_dict = self.result_dict, verbose=True,
-                                    SDL_option=SDL_option,
+                                    option=option,
                                     prediction_method_list=prediction_method_list)
                     threshold = self.result_dict.get('Training_threshold')
                     ACC_list = [self.result_dict.get('Accuracy ({})'.format(pred_type)) for pred_type in prediction_method_list]
@@ -1103,7 +1104,7 @@ class SMF_LPGD():
 
 
 
-        W, H = self.unfactored2factored(A, B, Beta1, rank=self.n_components, option=SDL_option)
+        W, H = self.unfactored2factored(A, B, Beta1, rank=self.n_components, option=option)
         self.result_dict.update({'loading': W})
         self.result_dict.update({'code': H})
         self.loading = W
@@ -1111,7 +1112,7 @@ class SMF_LPGD():
 
         self.validation(result_dict = self.result_dict,
                         verbose=True,
-                        SDL_option=SDL_option,
+                        option=option,
                         prediction_method_list=prediction_method_list)
         #threshold = self.result_dict.get('Opt_threshold')
         #AUC = self.result_dict.get('AUC')
@@ -1225,7 +1226,7 @@ class SMF_LPGD():
                     sub_iter=100,
                     verbose=False,
                     stopping_grad_ratio=0.0001,
-                    SDL_option = 'filter', # or 'feature'
+                    option = 'filter', # or 'feature'
                     prediction_method_list = ['filter', 'naive', 'alt', 'exhaustive']):
         '''
         Given input X = [data, label] and initial loading dictionary W_ini, find W = [dict, beta] and code H
@@ -1254,7 +1255,7 @@ class SMF_LPGD():
                                             X_test_aux=X_test_aux,
                                             W=W,
                                             pred_threshold = None,
-                                            SDL_option = SDL_option,
+                                            option = option,
                                             method=pred_type) #or 'exhaust' or # naive
 
             fpr, tpr, thresholds = metrics.roc_curve(test_Y[0, :], P_pred, pos_label=None)
@@ -1286,7 +1287,7 @@ class SMF_LPGD():
                 iter=10,
                 pred_threshold=None,
                 search_radius_const=10,
-                SDL_option='filter',
+                option='filter',
                 method='alt' # or 'exhaustive' or 'naive'
                 ):
         '''
@@ -1299,7 +1300,7 @@ class SMF_LPGD():
 
         if pred_threshold is None:
             # Get threshold from training set
-            if SDL_option == 'filter':
+            if option == 'filter':
                 X0_comp = W[0].T @ self.X[0]
                 X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
                 if self.d3>0:
@@ -1311,7 +1312,7 @@ class SMF_LPGD():
                 myauc_training = metrics.auc(fpr, tpr)
 
 
-            elif SDL_option == 'feature':
+            elif option == 'feature':
                 X0_comp = self.sparse_code(X[0], W[0], nonnegativity=False)
                 X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
                 if self.d3>0:
@@ -1335,7 +1336,7 @@ class SMF_LPGD():
             W = self.loading
         # print("-- W[0][0,0]", np.linalg.norm(W[0][0,0]))
 
-        if SDL_option == 'filter':
+        if option == 'filter':
             H = W[0].T @ X_test
             if X_test_aux is not None:
                 H = np.vstack((H, X_test_aux))
@@ -1350,7 +1351,7 @@ class SMF_LPGD():
             P_pred = P_pred[0,:]
             Y_hat = Y_hat[0,:]
 
-        elif SDL_option == 'feature':
+        elif option == 'feature':
             if method == 'naive':
                 H = self.sparse_code(X_test, W[0], nonnegativity=False)
                 #print('---- H naive shape', H.shape)
@@ -1458,6 +1459,20 @@ def safe_vstack(Xs):
         return sp.vstack(Xs)
     else:
         return np.vstack(Xs)
+
+
+def rank_r_projection(X, rank):
+    svd = TruncatedSVD(n_components=rank, n_iter=7, random_state=42)
+    X_reduced = svd.fit_transform(X) #
+    u = X_reduced.dot(np.linalg.inv(np.diag(svd.singular_values_)))
+    s = svd.singular_values_
+    vh = svd.components_
+    r = rank
+    u0 = u[:,:r]
+    s0 = s[:r]
+    v0 = vh[:r,:]
+    recons = u0 @ np.diag(s0) @ v0
+    return u0, s0, v0, recons
 
 
 def update_code_within_radius(X, W, H0, r, a1=0, a2=0,
