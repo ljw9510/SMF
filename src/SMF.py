@@ -383,7 +383,10 @@ class SMF_BCD():
                     #print('np.linalg.norm(self.X_auxiliary)', np.linalg.norm(self.X_auxiliary))
                     X0_comp = np.vstack((X0_comp, self.X_auxiliary))
                 
+                
                 # print(f"This is X[1].shape[0]: {X[1].shape[0]}")
+
+                ### Multinomial Case
                 if X[1].shape[0] != 1:
                     label_vec = np.copy(X[1])
                     for i in range(1, X[1].shape[0]):
@@ -405,6 +408,7 @@ class SMF_BCD():
                     #                                  r=search_radius, nonnegativity=self.nonnegativity[1],
                     #                                  a1=self.L1_reg[1], a2=self.L2_reg[1],
                     #                                  subsample_size = None)
+                ### Binomial Case
                 elif X[1].shape[0] == 1:
                     label_vec = X[1].flatten()
                     # print(f"label_vec's shape: {label_vec.shape}")
