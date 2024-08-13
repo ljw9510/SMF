@@ -43,7 +43,7 @@ class smf(nn.Module):
             self.output_size = 1
         else:
             self.multiclass = True
-            self.output_size = y_train.shape[0]
+            self.output_size = y_train.shape[1]
 
         self.X_train = X_train.to(self.device)
         self.y_train = y_train.to(self.device) 
@@ -87,6 +87,7 @@ class smf(nn.Module):
                 super(MultiClassification, self).__init__()
                 self.linear_W = nn.Linear(input_size, hidden_size, bias = False) # W.T @ X
                 self.linear_beta = nn.Linear(hidden_size, output_size) # activation beta.T @ (W.T @ X)
+                # print(f"!!! linear_beta: {self.linear_beta.weight.shape}")
 
             def forward(self, x):
                 x1 = self.linear_W(x)
@@ -95,6 +96,7 @@ class smf(nn.Module):
                 for i in range(x2.shape[0]):
                     max_i = torch.max(x2[i])
                     x3[i] = torch.exp(x2[i] - max_i) / (torch.exp(-max_i) + torch.sum(torch.exp(x2[i] - max_i)))
+                # print(f"x3: {x3.shape}")
                 return x3
 
         model = MultiClassification(self.X_train.shape[1], self.hidden_size, self.output_size)
@@ -106,6 +108,8 @@ class smf(nn.Module):
                 super(MF, self).__init__()
                 self.W = nn.Parameter(torch.rand(X.shape[0], hidden_size).clamp(min=1e-8))
                 self.H = nn.Parameter(torch.rand(hidden_size, X.shape[1]).clamp(min=1e-8))
+                # print(f"W: {self.W.shape}")
+                # print(f"H: {self.H.shape}")
 
             def forward(self):
                 return torch.mm(self.W, self.H)
@@ -132,6 +136,7 @@ class smf(nn.Module):
             def __init__(self, hidden_size, output_size=1):
                 super().__init__()
                 self.linear_beta = nn.Linear(hidden_size, output_size)
+                # print(f"The beta: {self.linear_beta.weight.shape}")
 
             def forward(self, a):
                 act = self.linear_beta(a) # input a = W.T @ X
@@ -269,7 +274,8 @@ class smf(nn.Module):
             # Update W
             optimizer_Classification.zero_grad()
             y_hat = self.model_Classification(self.X_train)
-            # print(f"!!! y_hat.shape: {y_hat.shape}")
+            # print(f"!!! y_hat.shape: {y_hat.squeeze().shape}")
+            # print(f" !!! y_train.shape: {self.y_train.shape}")
             loss_Classification = criterion_Classification(y_hat.squeeze(), self.y_train.float())
             loss_Classification.backward()
             optimizer_Classification.step()
@@ -372,7 +378,10 @@ class smf(nn.Module):
                       f'Loss_MF: {loss_MF.item():.4f}')
 
                 if test_data is not None:
-                    self.test(test_data[0], test_data[1])
+                    if self.multiclass == False:
+                        self.test(test_data[0], test_data[1])
+                    else:
+                        self.test_multi(test_data[0], test_data[1])
 
                 if record_recons_error:
                     loading = {}
@@ -480,6 +489,9 @@ class smf(nn.Module):
 
         X0_comp = W[0].T @ X[0]
         X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
+        # print(f"The X0_ext: {X0_ext.shape}")
+        # print(f"The W[1]: {W[1].shape}")
+        # print(f"X[1] : {X[1].shape}")
         error_label = np.sum(1 + np.sum(np.exp(W[1]@X0_ext), axis=0)) - np.trace(X[1].T @ W[1] @ X0_ext)
         total_error_new = error_label + self.result_dict.get('xi') * error_data
 
@@ -540,6 +552,40 @@ class smf(nn.Module):
             self.result_dict.update({'Miss_rate': miss_rate})
 
             print("Test accuracy = {}, Test AUC = {}".format(np.round(accuracy, 3), np.round(myauc_test, 3)) )
+
+    def test_multi(self, X_test, y_test):
+        with torch.no_grad():
+            predictions = self.model_Classification(X_test.to(self.device))
+            P_pred = np.asarray(predictions.detach().cpu().numpy())
+
+            mythre = self.result_dict.get("Training_threshold")
+            print("mythre=", mythre)
+
+            y_hat = (predictions.squeeze() > mythre).int()
+            y_hat = np.asarray(y_hat.cpu().numpy())
+            y_test = np.asarray(y_test.cpu().numpy()).copy()
+
+            y_test_result = []
+            y_pred_result = []
+            
+            for i in np.arange(y_test.shape[0]):
+                for j in np.arange(y_test.shape[1]):
+                    if y_test[i,j] == 1:
+                        y_test_result.append(1)
+                    else:
+                        y_test_result.append(0)
+                    if P_pred[i,j] >= mythre:
+                        y_pred_result.append(1)
+                    else:
+                        y_pred_result.append(0)
+
+            confusion_mx = metrics.confusion_matrix(y_test_result, y_pred_result)
+            accuracy = np.trace(confusion_mx)/np.sum(np.sum(confusion_mx))
+            self.result_dict.update({'Accuracy': accuracy})
+            
+            print("Test accuracy = {}, Test confusion_mx = {}".format(accuracy, confusion_mx))
+            
+
 
 def display_dictionary(W, save_name=None, score=None, grid_shape=None):
     k = int(np.sqrt(W.shape[0]))
