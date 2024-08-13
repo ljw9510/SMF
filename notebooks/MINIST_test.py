@@ -40,9 +40,7 @@ for i in range(y.shape[0]):
         y_matrix[label-1, i] = 1
 
 print(y_matrix.shape)
-    
 
-# %%
 ### Scale the input data
 from sklearn import preprocessing
 
@@ -81,12 +79,14 @@ test_size = 0.5
 
 X_train, X_test, Y_train, Y_test = train_test_split(X, y_matrix.T, test_size=test_size, random_state=2)
 # print(X_train.shape)
+# print(Y_train.shape)
 
 X_train = Variable(torch.from_numpy(X_train)).float()
 y_train = Variable(torch.from_numpy(Y_train)).long()
 X_test = Variable(torch.from_numpy(X_test)).float()
 y_test = Variable(torch.from_numpy(Y_test)).long()
 # print(f"y_train's ndim: {y_train.ndim}")
+# print(f"y_test: {y_test.shape}")
 
 smf_model = smf(X_train, y_train, hidden_size, device='cuda')
 smf_model.fit(num_epochs=10000,
