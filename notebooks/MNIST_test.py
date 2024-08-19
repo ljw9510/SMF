@@ -1,4 +1,3 @@
-# %%
 import numpy as np
 import pandas as pd
 from sklearn.datasets import fetch_openml
@@ -9,13 +8,15 @@ from sklearn import metrics
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from sklearn.model_selection import train_test_split
+import numpy as np
+import torch
+from torch.autograd import Variable
 
 import sys
 sys.path.append('../src')  # Go one level up and then into src
 from SMF import SMF_BCD
 from SMF_torch import smf
-
-# %%
 # Load data from https://www.openml.org/d/554
 X, y = fetch_openml('mnist_784', version=1, return_X_y=True)
 # X = X.values  ### Uncomment this line if you are having type errors in plotting. It is loading as a pandas dataframe, but our indexing is for numpy array. 
@@ -29,7 +30,6 @@ Each row of X is a vectroization of an image of 28 x 28 = 784 pixels.
 The corresponding row of y holds the true class label from {0,1, .. , 9}.
 '''
 
-# %%
 ### Change the dimension of y for SMF_BCD
 y_matrix = np.zeros((9, y.shape[0]))
 for i in range(y.shape[0]):
@@ -49,15 +49,6 @@ scaler = preprocessing.StandardScaler().fit(X)
 X= scaler.transform(X)
 
 print(X.shape)
-
-# %% [markdown]
-# # Torch Version
-
-# %%
-from sklearn.model_selection import train_test_split
-import numpy as np
-import torch
-from torch.autograd import Variable
 
 """
 #data = pd.read_csv('../Data/Pancreatic_GSE16515.csv')
@@ -93,7 +84,7 @@ smf_model.fit(num_epochs=10000,
                lr_classification=0.01,
                lr_matrix_factorization=0.01,
                xi=1,
-               initialize='spectral',
+               initialize='spectral', 
                W_nonnegativity=True,
                H_nonnegativity=True,
                test_data=[X_test, y_test],
