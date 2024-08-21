@@ -266,7 +266,7 @@ class smf(nn.Module):
                 self.result_dict.update({'code': H})
                 self.compute_recons_error_multi()
                         
-
+        print(f" !!! The device used: {self.device}")
         for epoch in range(num_epochs):
             self.result_dict.update({'curren_epoch': epoch})
             start = time.time()
