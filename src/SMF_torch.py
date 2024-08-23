@@ -29,7 +29,6 @@ class smf(nn.Module):
 
     def __init__(self,
                  X_train, y_train,
-                 output_size,
                  hidden_size=4,
                  device='cuda'):
         super(smf, self).__init__()
@@ -266,7 +265,6 @@ class smf(nn.Module):
                 self.result_dict.update({'code': H})
                 self.compute_recons_error_multi()
                         
-        print(f" !!! The device used: {self.device}")
         for epoch in range(num_epochs):
             self.result_dict.update({'curren_epoch': epoch})
             start = time.time()
@@ -374,6 +372,7 @@ class smf(nn.Module):
 
             if (epoch+1) % 10 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}],'
+                      f'Elapsed_time: {self.result_dict['elapsed_time']},' 
                       f'Loss_Classification: {loss_Classification.item():.4f}',
                       f'Loss_MF: {loss_MF.item():.4f}')
 
@@ -579,11 +578,38 @@ class smf(nn.Module):
                     else:
                         y_pred_result.append(0)
 
-            confusion_mx = metrics.confusion_matrix(y_test_result, y_pred_result)
-            accuracy = np.trace(confusion_mx)/np.sum(np.sum(confusion_mx))
+            mcm = metrics.confusion_matrix(y_test_result, y_pred_result)
+            accuracy = np.trace(mcm)/np.sum(np.sum(mcm))
+
+            tn = mcm[0, 0]
+            tp = mcm[1, 1]
+            fn = mcm[1, 0]
+            fp = mcm[0, 1]
+
+            accuracy = (tp + tn) / (tp + tn + fp + fn)
+            misclassification = 1 - accuracy
+            sensitivity = tp / (tp + fn)
+            specificity = tn / (tn + fp)
+            precision = tp / (tp + fp)
+            recall = tp / (tp + fn)
+            fall_out = fp / (fp + tn)
+            miss_rate = fn / (fn + tp)
+            F_score = 2 * precision * recall / ( precision + recall )
+
+            self.result_dict.update({'Y_test': y_test})
+            self.result_dict.update({'P_pred': P_pred})
+            self.result_dict.update({'Y_pred': y_hat})
             self.result_dict.update({'Accuracy': accuracy})
+            self.result_dict.update({'Misclassification': misclassification})
+            self.result_dict.update({'Precision': precision})
+            self.result_dict.update({'Recall': recall})
+            self.result_dict.update({'Sensitivity': sensitivity})
+            self.result_dict.update({'Specificity': specificity})
+            self.result_dict.update({'F_score': F_score})
+            self.result_dict.update({'Fall_out': fall_out})
+            self.result_dict.update({'Miss_rate': miss_rate})
             
-            print("Test accuracy = {}, Test confusion_mx = {}".format(accuracy, confusion_mx))
+            print("Test accuracy = {}, Test confusion_mx = {}".format(accuracy, mcm))
             
 
 
