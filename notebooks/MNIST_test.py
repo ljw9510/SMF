@@ -63,7 +63,7 @@ X = (X - np.mean(X, axis = 0))/(100*np.std(X, axis = 0)) # normalization
 """
 
 
-hidden_size = 2
+hidden_size = 4
 
 Accuracy = []
 test_size = 0.5
@@ -79,8 +79,8 @@ y_test = Variable(torch.from_numpy(Y_test)).long()
 # print(f"y_train's ndim: {y_train.ndim}")
 # print(f"y_test: {y_test.shape}")
 
-smf_model = smf(X_train, y_train, hidden_size, device='cuda')
-smf_model.fit(num_epochs=10000,
+smf_model = smf(X_train, y_train, hidden_size=hidden_size, device='cuda')
+smf_model.fit(num_epochs=500,
                lr_classification=0.01,
                lr_matrix_factorization=0.01,
                xi=1,
