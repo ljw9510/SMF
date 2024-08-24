@@ -73,7 +73,7 @@ class smf(nn.Module):
             def forward(self, x):
                 x1 = self.linear_W(x)
                 x2 = self.linear_beta(x1)
-                print(f"x2's shape: {x2.shape}")
+                # print(f"x2's shape: {x2.shape}")
                 x3 = torch.sigmoid(x2)
                 return x3
 
