@@ -372,7 +372,7 @@ class smf(nn.Module):
 
             if (epoch+1) % 10 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}],'
-                      f'Elapsed_time: {self.result_dict['elapsed_time']},' 
+                      f"Elapsed_time: {self.result_dict['elapsed_time']}," 
                       f'Loss_Classification: {loss_Classification.item():.4f}',
                       f'Loss_MF: {loss_MF.item():.4f}')
 
