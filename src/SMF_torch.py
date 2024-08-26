@@ -5,6 +5,7 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 from torch.autograd import Variable
 import numpy as np
+from scipy.sparse import csr_matrix
  
 import time
 from sklearn import metrics
@@ -488,11 +489,36 @@ class smf(nn.Module):
 
         X0_comp = W[0].T @ X[0]
         X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
-        # print(f"The X0_ext: {X0_ext.shape}")
-        # print(f"The W[1]: {W[1].shape}")
-        # print(f"X[1] : {X[1].shape}")
-        error_label = np.sum(1 + np.sum(np.exp(W[1]@X0_ext), axis=0)) - np.trace(X[1].T @ W[1] @ X0_ext)
+
+        ### modify matrices as sparse matrices
+        # Assuming W[1], X0_ext, and X[1] are dense matrices, convert them to sparse format
+        # Convert dense matrices to sparse format
+        W_sparse = csr_matrix(W[1])
+        X0_ext_sparse = csr_matrix(X0_ext)
+        X_sparse = csr_matrix(X[1])
+
+        # Perform matrix multiplication using sparse matrices
+        sparse_result = W_sparse @ X0_ext_sparse
+
+        # Apply np.exp only to the non-zero elements of the sparse matrix
+        exp_data = np.exp(sparse_result.data)
+
+        # Create a new sparse matrix with the exponentiated values
+        exp_result = csr_matrix((exp_data, sparse_result.indices, sparse_result.indptr), shape=sparse_result.shape)
+
+        # Convert sparse matrix to dense format before summation (if needed)
+        exp_result_dense = exp_result.toarray()
+
+        # Calculate trace manually on sparse matrices (sum of diagonal elements)
+        trace_result = np.sum((X_sparse.T @ W_sparse @ X0_ext_sparse).diagonal())
+
+        # Calculate error_label
+        error_label = np.sum(1 + np.sum(exp_result_dense, axis=0)) - trace_result
+
+        # Continue with the original logic for total_error_new
         total_error_new = error_label + self.result_dict.get('xi') * error_data
+        # error_label = np.sum(1 + np.sum(np.exp(W[1]@X0_ext), axis=0)) - np.trace(X[1].T @ W[1] @ X0_ext)
+        # total_error_new = error_label + self.result_dict.get('xi') * error_data
 
         elapsed_time = self.result_dict.get("elapsed_time")
         time_error = self.result_dict.get("time_error")
