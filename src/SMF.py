@@ -882,9 +882,6 @@ class SMF_BCD():
         if X_test_aux is None:
             X_test_aux = self.X_test_aux
 
-        test_X = X_test[0]
-        test_Y = X_test[1]
-
         W = result_dict.get('loading')
         beta = W[1].T
         
@@ -901,16 +898,20 @@ class SMF_BCD():
                 for i in range(len(normalizer)):
                     normalizer[i] = 1 + np.sum(exp_numerator[:, i])
                 P_pred = np.copy(exp_numerator)
+                P_pred = np.vstack((np.ones(P_pred.shape[1]),P_pred))
                 for i in range(X_test[0].shape[1]):
                     P_pred[:, i] = P_pred[:, i] / normalizer[i]
                 
-                accuracy_result = multiclass_accuracy_metrics(Y_test=self.X_test[1], 
+                multiclass_accuracy_metrics(Y_test=self.X_test[1], result_dict=result_dict,
                                                             P_pred=P_pred, threshold=threshold)
                 if verbose == True:
-                    confusion_matrix = accuracy_result.get('confusion_mx')
-                    ACC = accuracy_result.get('Accuracy')
-                    print('!!! --- Validation --- [confusion_mx, Accuracy] = ', [confusion_matrix, np.round(ACC, 3)])
-        return accuracy_result
+                    ACC = result_dict.get('Accuracy')
+                    if self.X_test[1].shape[0] <= 20:
+                        confusion_matrix = result_dict.get('confusion_mx')
+                        print('!!! --- Validation --- [confusion_mx, Accuracy] = \n', [confusion_matrix, np.round(ACC, 3)])
+                    else:
+                        print('!!! --- Validation --- [Accuracy] = ', [np.round(ACC, 3)])
+        return result_dict
 
 
 class SMF_LPGD():
@@ -1753,7 +1754,7 @@ def compute_accuracy_metrics(y_test, y_pred, pred_type=None):
 
     return result_dict
 
-def multiclass_accuracy_metrics(Y_test, P_pred, threshold = 0.5, class_labels=None, use_opt_threshold=False):
+def multiclass_accuracy_metrics(Y_test, P_pred, result_dict, threshold = 0.5, class_labels=None, use_opt_threshold=False):
     '''
     y_test = multiclass one-hot encoding  labels 
     Q = predicted probability for y_test
@@ -1761,23 +1762,32 @@ def multiclass_accuracy_metrics(Y_test, P_pred, threshold = 0.5, class_labels=No
     '''
     Y_test_T = Y_test.T
     P_pred_T = P_pred.T
-    results_dict = {}
     y_test = []
     y_pred = []
+
+    # print(f"!!! Y_test's shape: {Y_test.shape}")
+    # print(f"!!! P_pred's shape: {P_pred.shape}")
+    # print(f"!!! the first column: {P_pred[0]}")
     
+    count = 0
     for i in np.arange(Y_test_T.shape[0]):
-        for j in np.arange(Y_test_T.shape[1]):
-            if Y_test_T[i,j] == 1:
-                y_test.append(1)
-            else:
-                y_test.append(0)
-            if P_pred_T[i,j] >= threshold:
-                y_pred.append(1)
-            else:
-                y_pred.append(0)
-            
-    confusion_mx = metrics.confusion_matrix(y_test, y_pred)
-    results_dict.update({'confusion_mx':confusion_mx})
-    results_dict.update({'Accuracy':np.trace(confusion_mx)/np.sum(np.sum(confusion_mx))})
+        # predicted class of sample "i":
+        y1 = np.arange(P_pred_T.shape[1])[np.max(P_pred_T[i,:]) ==  P_pred_T[i,:]][0]
+        
+        # True class of sample "i":
+        if np.max(Y_test_T[i,:]) == 1:
+            y2 = np.sum( np.arange(1,Y_test_T.shape[1]+1) * (Y_test_T[i,:] == 1) )
+        else:
+            y2 = 0
+        
+        y_test.append(y1)
+        y_pred.append(y2)
     
-    return results_dict
+    confusion_mx = metrics.confusion_matrix(y_test, y_pred)
+    accuracy = np.trace(confusion_mx) / Y_test_T.shape[0]
+
+    # print(f"!!! The temp_acc: {temp_acc}")
+    result_dict.update({'confusion_mx':confusion_mx})
+    result_dict.update({'Accuracy': accuracy})
+    
+    return result_dict
