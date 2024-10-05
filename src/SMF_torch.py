@@ -5,7 +5,8 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 from torch.autograd import Variable
 import numpy as np
-
+from scipy.sparse import csr_matrix
+ 
 import time
 from sklearn import metrics
 from sklearn.metrics import precision_recall_curve
@@ -30,7 +31,6 @@ class smf(nn.Module):
     def __init__(self,
                  X_train, y_train,
                  hidden_size=4,
-                 output_size=1,
                  device='cuda'):
         super(smf, self).__init__()
 
@@ -38,14 +38,24 @@ class smf(nn.Module):
         if device =='cpu':
             self.device = torch.device('cpu')
 
-        self.X_train = X_train.to(self.device)
-        self.y_train = y_train.to(self.device) # binary label. Need to revise for multi-class using one-hot encoding.
-        self.hidden_size = hidden_size
-        self.output_size = output_size
+        if y_train.ndim == 1:
+            self.multiclass = False
+            self.output_size = 1
+        else:
+            self.multiclass = True
+            self.output_size = y_train.shape[1]
 
-        self.model_Classification = self._initialize_classification_model().to(self.device)
+        self.X_train = X_train.to(self.device)
+        self.y_train = y_train.to(self.device) 
+        self.hidden_size = hidden_size
+
+        if self.multiclass == True:
+            self.model_Classification = self._initialize_multiclassification_model().to(self.device)
+            self.model_Classification_beta = self._initialize_multiclassification_model_for_beta().to(self.device)
+        else:
+            self.model_Classification = self._initialize_classification_model().to(self.device)
+            self.model_Classification_beta = self._initialize_classification_model_for_beta().to(self.device)
         self.model_MF = self._initialize_matrix_factorization_model().to(self.device)
-        self.model_Classification_beta = self._initialize_classification_model_for_beta().to(self.device)
         self.model_MF_H = self._initialize_matrix_factorization_model_for_H().to(self.device)
 
         self.result_dict = {}
@@ -56,24 +66,50 @@ class smf(nn.Module):
         class Classification(nn.Module):
             def __init__(self, input_size, hidden_size, output_size=1):
                 super(Classification, self).__init__()
-                self.linear_W = nn.Linear(input_size, hidden_size, bias = False) # W.T @ X
+                self.linear_W = nn.Linear(input_size, hidden_size, bias = False) # W.T @ X 
                 self.linear_beta = nn.Linear(hidden_size, output_size) # activation beta.T @ (W.T @ X)
+                # print(f"linear_beta's shape: {self.linear_beta.weight.shape}")
+                # print(f"linear_W's shape: {self.linear_W.weight.shape}")
 
             def forward(self, x):
                 x1 = self.linear_W(x)
                 x2 = self.linear_beta(x1)
+                # print(f"x2's shape: {x2.shape}")
                 x3 = torch.sigmoid(x2)
                 return x3
 
         model = Classification(self.X_train.shape[1], self.hidden_size, self.output_size)
         return model.to(self.device)
 
+    def _initialize_multiclassification_model(self):
+        class MultiClassification(nn.Module):
+            def __init__(self, input_size, hidden_size, output_size):
+                super(MultiClassification, self).__init__()
+                self.linear_W = nn.Linear(input_size, hidden_size, bias = False) # W.T @ X
+                self.linear_beta = nn.Linear(hidden_size, output_size) # activation beta.T @ (W.T @ X)
+                # print(f"!!! linear_beta: {self.linear_beta.weight.shape}")
+
+            def forward(self, x):
+                x1 = self.linear_W(x)
+                x2 = self.linear_beta(x1)
+                x3 = torch.zeros_like(x2)
+                for i in range(x2.shape[0]):
+                    max_i = torch.max(x2[i])
+                    x3[i] = torch.exp(x2[i] - max_i) / (torch.exp(-max_i) + torch.sum(torch.exp(x2[i] - max_i)))
+                # print(f"x3: {x3.shape}")
+                return x3
+
+        model = MultiClassification(self.X_train.shape[1], self.hidden_size, self.output_size)
+        return model.to(self.device)
+    
     def _initialize_matrix_factorization_model(self):
         class MF(nn.Module):
             def __init__(self, X, hidden_size):
                 super(MF, self).__init__()
                 self.W = nn.Parameter(torch.rand(X.shape[0], hidden_size).clamp(min=1e-8))
                 self.H = nn.Parameter(torch.rand(hidden_size, X.shape[1]).clamp(min=1e-8))
+                # print(f"W: {self.W.shape}")
+                # print(f"H: {self.H.shape}")
 
             def forward(self):
                 return torch.mm(self.W, self.H)
@@ -89,10 +125,28 @@ class smf(nn.Module):
 
             def forward(self, a):
                 act = self.linear_beta(a) # input a = W.T @ X
-                y_pred = torch.sigmoid(act)
+                y_pred = torch.softmax(act)
                 return y_pred
 
         model = Classification_beta(self.hidden_size, self.output_size)
+        return model.to(self.device)
+    
+    def _initialize_multiclassification_model_for_beta(self):
+        class MultiClassification_beta(nn.Module):
+            def __init__(self, hidden_size, output_size=1):
+                super().__init__()
+                self.linear_beta = nn.Linear(hidden_size, output_size)
+                # print(f"The beta: {self.linear_beta.weight.shape}")
+
+            def forward(self, a):
+                act = self.linear_beta(a) # input a = W.T @ X
+                y_pred = torch.zeros_like(act)
+                for i in range(act.shape[0]):
+                    max_i = torch.max(act[i])
+                    y_pred[i] = torch.exp(act[i] - max_i) / (torch.exp(-max_i) + torch.sum(torch.exp(act[i] - max_i)))
+                return y_pred
+
+        model = MultiClassification_beta(self.hidden_size, self.output_size)
         return model.to(self.device)
 
     def _initialize_matrix_factorization_model_for_H(self):
@@ -131,7 +185,8 @@ class smf(nn.Module):
             W_nonnegativity=True,
             H_nonnegativity=True,
             test_data=None, #or [X_test, y_test]
-            record_recons_error=False):
+            record_recons_error=False,
+            threshold = 0.5):
 
         self.result_dict.update({'xi' : xi})
         self.result_dict.update({'nonnegativity' : [W_nonnegativity, H_nonnegativity]})
@@ -141,6 +196,7 @@ class smf(nn.Module):
         elapsed_time = 0
         self.result_dict.update({"time_error": time_error})
 
+        # ini_loading = [W, beta]
         if ini_loading is not None:
             W0 = Variable(ini_loading[0]).to(self.device)
             Beta0 = Variable(ini_loading[1][:,1:]).to(self.device)
@@ -183,19 +239,33 @@ class smf(nn.Module):
         optimizer_MF = optim.Adagrad(self.model_MF.parameters(), lr=lr_matrix_factorization, weight_decay=0)
 
         if record_recons_error:
-            self.result_dict.update({'curren_epoch': -1})
-            self.result_dict.update({'elapsed_time': 0})
+            if self.multiclass == False:
+                self.result_dict.update({'curren_epoch': -1})
+                self.result_dict.update({'elapsed_time': 0})
 
-            W_dict = np.asarray(self.model_MF.W.data.cpu().numpy()).copy()
-            H = np.asarray(self.model_MF.H.data.cpu().numpy()).copy()
-            Beta = np.asarray(self.model_Classification.linear_beta.weight.detach().cpu().numpy()).copy()
-            Beta_bias = np.asarray(self.model_Classification.linear_beta.bias.detach().cpu().numpy()).copy()
-            Beta_combined = np.hstack((Beta_bias.reshape(self.output_size, -1),Beta))
+                W_dict = np.asarray(self.model_MF.W.data.cpu().numpy()).copy()
+                H = np.asarray(self.model_MF.H.data.cpu().numpy()).copy()
+                Beta = np.asarray(self.model_Classification.linear_beta.weight.detach().cpu().numpy()).copy()
+                Beta_bias = np.asarray(self.model_Classification.linear_beta.bias.detach().cpu().numpy()).copy()
+                Beta_combined = np.hstack((Beta_bias.reshape(self.output_size, -1),Beta))
 
-            self.result_dict.update({'loading': [W_dict, Beta_combined]})
-            self.result_dict.update({'code': H})
-            self.compute_recons_error()
+                self.result_dict.update({'loading': [W_dict, Beta_combined]})
+                self.result_dict.update({'code': H})
+                self.compute_recons_error()
+            else:
+                self.result_dict.update({'curren_epoch': -1})
+                self.result_dict.update({'elapsed_time': 0})
 
+                W_dict = np.asarray(self.model_MF.W.data.cpu().numpy()).copy()
+                H = np.asarray(self.model_MF.H.data.cpu().numpy()).copy()
+                Beta = np.asarray(self.model_Classification.linear_beta.weight.detach().cpu().numpy()).copy()
+                Beta_bias = np.asarray(self.model_Classification.linear_beta.bias.detach().cpu().numpy()).copy()
+                Beta_combined = np.hstack((Beta_bias.reshape(self.output_size, -1),Beta))
+
+                self.result_dict.update({'loading': [W_dict, Beta_combined]})
+                self.result_dict.update({'code': H})
+                self.compute_recons_error_multi()
+                        
         for epoch in range(num_epochs):
             self.result_dict.update({'curren_epoch': epoch})
             start = time.time()
@@ -203,6 +273,8 @@ class smf(nn.Module):
             # Update W
             optimizer_Classification.zero_grad()
             y_hat = self.model_Classification(self.X_train)
+            # print(f"!!! y_hat.shape: {y_hat.squeeze().shape}")
+            # print(f" !!! y_train.shape: {self.y_train.shape}")
             loss_Classification = criterion_Classification(y_hat.squeeze(), self.y_train.float())
             loss_Classification.backward()
             optimizer_Classification.step()
@@ -229,13 +301,37 @@ class smf(nn.Module):
             X0 = np.asarray(self.X_train.T.detach().cpu().numpy())
             y_train_cpu = np.asarray(self.y_train.detach().cpu().numpy())
             y_train_cpu = y_train_cpu[np.newaxis,:]
+            y_train_cpu = y_train_cpu[0]
             W0 = np.asarray(self.model_MF.W.data.detach().cpu().numpy())
+            X0_comp = W0.T @ X0
+            # print(f"!!! y_train_cpu.shape: {y_train_cpu.shape}")
 
             # fitting logistic regression again with updated W
-            X0_comp = W0.T @ X0
-            clf = LogisticRegression(random_state=0).fit(X0_comp.T, y_train_cpu[0])
-            beta_weight = torch.from_numpy(clf.coef_).float().to(self.device)
-            beta_bias = torch.from_numpy(clf.intercept_).float().to(self.device)
+            ### Multinomial Case
+            if self.multiclass == True:
+                label_vec = np.copy(y_train_cpu.T)
+                for i in range(1, label_vec.shape[0]):
+                    label_vec[i, :][label_vec[i, :] == 1] = i+1
+                label_vec = np.sum(label_vec, axis=0)
+                clf = LogisticRegression(random_state=0, max_iter=300).fit(X0_comp.T, label_vec)
+                coef = np.zeros((self.y_train.shape[1], W0.shape[1]))
+                for row in range(self.y_train.shape[1]):
+                    coef[row] = clf.coef_[row+1] - clf.coef_[0]
+                intercepts = np.zeros(self.y_train.shape[1])
+                for i in range(self.y_train.shape[1]):
+                    intercepts[i] = clf.intercept_[i+1] - clf.intercept_[0]
+                beta_weight = torch.from_numpy(coef).float().to(self.device)
+                beta_bias = torch.from_numpy(intercepts).float().to(self.device)
+                # W[1] = self.update_beta_joint_logistic(X, H, W, stopping_diff=0.0001,
+                #                                  sub_iter = 5,
+                #                                  r=search_radius, nonnegativity=self.nonnegativity[1],
+                #                                  a1=self.L1_reg[1], a2=self.L2_reg[1],
+                #                                  subsample_size = None)
+            ### Binomial Case
+            else:
+                clf = LogisticRegression(random_state=0).fit(X0_comp.T, y_train_cpu)
+                beta_weight = torch.from_numpy(clf.coef_).float().to(self.device)
+                beta_bias = torch.from_numpy(clf.intercept_).float().to(self.device)
 
             """
             # torch version
@@ -277,11 +373,15 @@ class smf(nn.Module):
 
             if (epoch+1) % 10 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}],'
+                      f"Elapsed_time: {self.result_dict['elapsed_time']}," 
                       f'Loss_Classification: {loss_Classification.item():.4f}',
                       f'Loss_MF: {loss_MF.item():.4f}')
 
                 if test_data is not None:
-                    self.test(test_data[0], test_data[1])
+                    if self.multiclass == False:
+                        self.test(test_data[0], test_data[1])
+                    else:
+                        self.test_multi(test_data[0], test_data[1])
 
                 if record_recons_error:
                     loading = {}
@@ -293,7 +393,10 @@ class smf(nn.Module):
 
                     self.result_dict.update({'loading': [W_dict, Beta_combined]})
                     self.result_dict.update({'code': H})
-                    self.compute_recons_error()
+                    if self.multiclass == False:
+                        self.compute_recons_error()
+                    else:
+                        self.compute_recons_error_multi
 
         loading = {}
         W_dict = np.asarray(self.model_MF.W.data.cpu().numpy()).copy()
@@ -372,6 +475,59 @@ class smf(nn.Module):
         self.result_dict.update({'Relative_reconstruction_loss (training)': rel_error_data})
         self.result_dict.update({'Classification_loss (training)': error_label})
         self.result_dict.update({'time_error': time_error})
+    
+    def compute_recons_error_multi(self):
+        # print the error every 50 iterations
+        W = self.result_dict.get('loading')
+        H = self.result_dict.get('code')
+        X_train = np.asarray(self.X_train.cpu().numpy()).copy().T
+        y_train = np.asarray(self.y_train.cpu().numpy()).copy().T
+        X = [X_train, y_train]
+
+        error_data = np.linalg.norm((X[0] - W[0] @ H).reshape(-1, 1), ord=2)**2
+        rel_error_data = error_data / np.linalg.norm(X[0].reshape(-1, 1), ord=2)**2
+
+        X0_comp = W[0].T @ X[0]
+        X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
+
+        ### modify matrices as sparse matrices
+        # Assuming W[1], X0_ext, and X[1] are dense matrices, convert them to sparse format
+        # Convert dense matrices to sparse format
+        W_sparse = csr_matrix(W[1])
+        X0_ext_sparse = csr_matrix(X0_ext)
+        X_sparse = csr_matrix(X[1])
+
+        # Perform matrix multiplication using sparse matrices
+        sparse_result = W_sparse @ X0_ext_sparse
+
+        # Apply np.exp only to the non-zero elements of the sparse matrix
+        exp_data = np.exp(sparse_result.data)
+
+        # Create a new sparse matrix with the exponentiated values
+        exp_result = csr_matrix((exp_data, sparse_result.indices, sparse_result.indptr), shape=sparse_result.shape)
+
+        # Convert sparse matrix to dense format before summation (if needed)
+        exp_result_dense = exp_result.toarray()
+
+        # Calculate trace manually on sparse matrices (sum of diagonal elements)
+        trace_result = np.sum((X_sparse.T @ W_sparse @ X0_ext_sparse).diagonal())
+
+        # Calculate error_label
+        error_label = np.sum(1 + np.sum(exp_result_dense, axis=0)) - trace_result
+
+        # Continue with the original logic for total_error_new
+        total_error_new = error_label + self.result_dict.get('xi') * error_data
+        # error_label = np.sum(1 + np.sum(np.exp(W[1]@X0_ext), axis=0)) - np.trace(X[1].T @ W[1] @ X0_ext)
+        # total_error_new = error_label + self.result_dict.get('xi') * error_data
+
+        elapsed_time = self.result_dict.get("elapsed_time")
+        time_error = self.result_dict.get("time_error")
+        time_error = np.append(time_error, np.array([[elapsed_time, error_data, error_label]]).T, axis=1)
+        print('--- Iteration %i: Training loss --- [Data, Label, Total] = [%f.3, %f.3, %f.3]' % (self.result_dict.get("curren_epoch"), error_data, error_label, total_error_new))
+
+        self.result_dict.update({'Relative_reconstruction_loss (training)': rel_error_data})
+        self.result_dict.update({'Classification_loss (training)': error_label})
+        self.result_dict.update({'time_error': time_error.T})
 
     def test(self, X_test, y_test):
         with torch.no_grad():
@@ -421,6 +577,67 @@ class smf(nn.Module):
             self.result_dict.update({'Miss_rate': miss_rate})
 
             print("Test accuracy = {}, Test AUC = {}".format(np.round(accuracy, 3), np.round(myauc_test, 3)) )
+
+    def test_multi(self, X_test, y_test):
+        with torch.no_grad():
+            predictions = self.model_Classification(X_test.to(self.device))
+            P_pred = np.asarray(predictions.detach().cpu().numpy())
+
+            mythre = self.result_dict.get("Training_threshold")
+            print("mythre=", mythre)
+
+            y_hat = (predictions.squeeze() > mythre).int()
+            y_hat = np.asarray(y_hat.cpu().numpy())
+            y_test = np.asarray(y_test.cpu().numpy()).copy()
+
+            y_test_result = []
+            y_pred_result = []
+            
+            for i in np.arange(y_test.shape[0]):
+                for j in np.arange(y_test.shape[1]):
+                    if y_test[i,j] == 1:
+                        y_test_result.append(1)
+                    else:
+                        y_test_result.append(0)
+                    if P_pred[i,j] >= mythre:
+                        y_pred_result.append(1)
+                    else:
+                        y_pred_result.append(0)
+
+            mcm = metrics.confusion_matrix(y_test_result, y_pred_result)
+            accuracy = np.trace(mcm)/np.sum(np.sum(mcm))
+
+            tn = mcm[0, 0]
+            tp = mcm[1, 1]
+            fn = mcm[1, 0]
+            fp = mcm[0, 1]
+
+            accuracy = (tp + tn) / (tp + tn + fp + fn)
+            misclassification = 1 - accuracy
+            sensitivity = tp / (tp + fn)
+            specificity = tn / (tn + fp)
+            precision = tp / (tp + fp)
+            recall = tp / (tp + fn)
+            fall_out = fp / (fp + tn)
+            miss_rate = fn / (fn + tp)
+            F_score = 2 * precision * recall / ( precision + recall )
+
+            self.result_dict.update({'Y_test': y_test})
+            self.result_dict.update({'P_pred': P_pred})
+            self.result_dict.update({'Y_pred': y_hat})
+            self.result_dict.update({'Accuracy': accuracy})
+            self.result_dict.update({'Misclassification': misclassification})
+            self.result_dict.update({'Precision': precision})
+            self.result_dict.update({'Recall': recall})
+            self.result_dict.update({'Sensitivity': sensitivity})
+            self.result_dict.update({'Specificity': specificity})
+            self.result_dict.update({'F_score': F_score})
+            self.result_dict.update({'Fall_out': fall_out})
+            self.result_dict.update({'Miss_rate': miss_rate})
+            
+            print("Test accuracy = {}, Test confusion_mx = {}".format(accuracy, mcm))
+            
+
 
 def display_dictionary(W, save_name=None, score=None, grid_shape=None):
     k = int(np.sqrt(W.shape[0]))
