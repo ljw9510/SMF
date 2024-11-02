@@ -35,8 +35,9 @@ class smf(nn.Module):
         super(smf, self).__init__()
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        if device =='cpu':
-            self.device = torch.device('cpu')
+        if device =='mps':
+            self.device = torch.device('mps')
+        print(f"!!! torch.device: {self.device}")
 
         if y_train.ndim == 1:
             self.multiclass = False
@@ -590,52 +591,65 @@ class smf(nn.Module):
             y_hat = np.asarray(y_hat.cpu().numpy())
             y_test = np.asarray(y_test.cpu().numpy()).copy()
 
+
             y_test_result = []
             y_pred_result = []
             
+            # for i in np.arange(y_test.shape[0]):
+            #     for j in np.arange(y_test.shape[1]):
+            #         if y_test[i,j] == 1:
+            #             y_test_result.append(1)
+            #         else:
+            #             y_test_result.append(0)
+            #         if P_pred[i,j] >= mythre:
+            #             y_pred_result.append(1)
+            #         else:
+            #             y_pred_result.append(0)
+
+            # mcm = metrics.confusion_matrix(y_test_result, y_pred_result)
+            # accuracy = np.trace(mcm)/np.sum(np.sum(mcm))
+
+            # tn = mcm[0, 0]
+            # tp = mcm[1, 1]
+            # fn = mcm[1, 0]
+            # fp = mcm[0, 1]
+
+            # accuracy = (tp + tn) / (tp + tn + fp + fn)
+            # misclassification = 1 - accuracy
+            # sensitivity = tp / (tp + fn)
+            # specificity = tn / (tn + fp)
+            # precision = tp / (tp + fp)
+            # recall = tp / (tp + fn)
+            # fall_out = fp / (fp + tn)
+            # miss_rate = fn / (fn + tp)
+            # F_score = 2 * precision * recall / ( precision + recall )
+
+            count = 0
             for i in np.arange(y_test.shape[0]):
-                for j in np.arange(y_test.shape[1]):
-                    if y_test[i,j] == 1:
-                        y_test_result.append(1)
-                    else:
-                        y_test_result.append(0)
-                    if P_pred[i,j] >= mythre:
-                        y_pred_result.append(1)
-                    else:
-                        y_pred_result.append(0)
+                # predicted class of sample "i":
+                y1 = np.arange(y_hat.shape[1])[np.max(y_hat[i,:]) ==  y_hat[i,:]][0]
+                
+                # True class of sample "i":
+                if np.max(y_test[i,:]) == 1:
+                    y2 = np.sum( np.arange(1,y_test.shape[1]+1) * (y_test[i,:] == 1) )
+                else:
+                    y2 = 0
+                
+                y_test_result.append(y1)
+                y_pred_result.append(y2)
+            
+            confusion_mx = metrics.confusion_matrix(y_test_result, y_pred_result)
+            accuracy = np.trace(confusion_mx) / y_test.shape[0]
 
-            mcm = metrics.confusion_matrix(y_test_result, y_pred_result)
-            accuracy = np.trace(mcm)/np.sum(np.sum(mcm))
-
-            tn = mcm[0, 0]
-            tp = mcm[1, 1]
-            fn = mcm[1, 0]
-            fp = mcm[0, 1]
-
-            accuracy = (tp + tn) / (tp + tn + fp + fn)
-            misclassification = 1 - accuracy
-            sensitivity = tp / (tp + fn)
-            specificity = tn / (tn + fp)
-            precision = tp / (tp + fp)
-            recall = tp / (tp + fn)
-            fall_out = fp / (fp + tn)
-            miss_rate = fn / (fn + tp)
-            F_score = 2 * precision * recall / ( precision + recall )
+            # print(f"!!! The temp_acc: {temp_acc}")
+            self.result_dict.update({'confusion_mx':confusion_mx})
+            self.result_dict.update({'Accuracy': accuracy})
 
             self.result_dict.update({'Y_test': y_test})
             self.result_dict.update({'P_pred': P_pred})
             self.result_dict.update({'Y_pred': y_hat})
-            self.result_dict.update({'Accuracy': accuracy})
-            self.result_dict.update({'Misclassification': misclassification})
-            self.result_dict.update({'Precision': precision})
-            self.result_dict.update({'Recall': recall})
-            self.result_dict.update({'Sensitivity': sensitivity})
-            self.result_dict.update({'Specificity': specificity})
-            self.result_dict.update({'F_score': F_score})
-            self.result_dict.update({'Fall_out': fall_out})
-            self.result_dict.update({'Miss_rate': miss_rate})
             
-            print("Test accuracy = {}, Test confusion_mx = {}".format(accuracy, mcm))
+            print("Test accuracy = {}, Test confusion_mx = {}".format(accuracy, confusion_mx))
             
 
 
