@@ -182,11 +182,6 @@ class smf(nn.Module):
             #loss_MF.backward()
             #optimizer_MF.step()
 
-            """
-            common_W = (xi/(1+xi)) * self.model_MF.W.data.to(self.device) + (1/(1+xi)) * self.model_Classification.linear_W.weight.T
-            common_W = common_W/ common_W.norm()
-            common_W = common_W.to(self.device)
-            """
 
             X0 = np.asarray(self.X_train.T.detach().cpu().numpy())
             y_train_cpu = np.asarray(self.y_train.detach().cpu().numpy())
@@ -201,15 +196,6 @@ class smf(nn.Module):
             Beta = np.hstack((Beta_bias, Beta_weight))
             W0 = [W0, Beta]
 
-            """
-            print("X0.shape=", X0.shape)
-            #print("W0.shape=", W0.shape)
-            print("H0.shape=", H0.shape)
-            print("Beta_weight.shape=", Beta_weight.shape)
-            print("Beta_bias.shape=", Beta_bias.shape)
-            print("Beta.shape=", Beta.shape)
-            """
-
             W = update_dict_joint_logistic([X0, y_train_cpu], H0, W0, stopping_diff=0.0001,
                                              sub_iter = 5,
                                              r=None, nonnegativity=None,
@@ -217,14 +203,6 @@ class smf(nn.Module):
                                              subsample_size = None)
             W = W/np.linalg.norm(W)
 
-            """
-            if W_nonnegativity:
-                #self.model_MF.W.data = self.model_MF.W.data.clamp(min=1e-8)
-                #self.model_Classification.linear_W.weight = self.model_Classification.linear_W.weight.clamp(min=1e-8)
-                common_W = common_W.clamp(min=1e-8)
-            if H_nonnegativity:
-                self.model_MF.H.data = self.model_MF.H.data.clamp(min=1e-8)
-            """
 
             # fitting logistic regression again with updated W
             #X0_comp = torch.mm(W.T, self.X_train.T).T
@@ -264,41 +242,6 @@ class smf(nn.Module):
             with torch.no_grad():
                 self.model_MF.W = nn.Parameter(W.clone())
                 self.model_MF.H = nn.Parameter(H.clone())
-
-
-
-            #print("self.model_Classification.linear_beta.bias.shape", self.model_Classification.linear_beta.bias.shape)
-            #print("self.model_Classification.linear_beta.weight.shape", self.model_Classification.linear_beta.weight.shape)
-
-            #print("self.model_Classification.linear_beta.weight=", self.model_Classification.linear_beta.weight)
-
-
-
-
-            #print("beta_weight=", beta_weight)
-            #print("beta_bias=", beta_bias)
-
-            #print("beta_weight.shape=", beta_weight.shape)
-            #print("beta_bias.shape=", beta_bias.shape)
-
-            """
-            beta_weight, beta_bias = fit_LR_torch(input=a1,
-                                                  output=self.y_train,
-                                                  device=self.device,
-                                                  num_epochs=10, lr=0.01)
-            """
-
-
-
-            """
-            for step in torch.arange(0,5):
-                y_hat1 = self.model_Classification_beta(a1)
-                loss_Classification_beta = criterion_Classification_beta(y_hat1.squeeze(), self.y_train.float())
-                optimizer_Classification_beta.zero_grad()
-                loss_Classification_beta.backward(retain_graph=True)
-                optimizer_Classification_beta.step()
-                print("epoch={}, step={}, beta={}".format(epoch, step, self.model_Classification.linear_beta.weight))
-            """
 
 
             end = time.time()
