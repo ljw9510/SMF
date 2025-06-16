@@ -5,59 +5,44 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 from torch.autograd import Variable
 import numpy as np
-from scipy.sparse import csr_matrix
- 
+from torch.utils.data import DataLoader
+from matplotlib import pyplot as plt
+from tqdm import tqdm
 import time
 from sklearn import metrics
 from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
 from sklearn.linear_model import LogisticRegression
-import matplotlib.pyplot as plt
+
+
+#device = torch.device('cpu') # gpu or cpu
 
 class smf(nn.Module):
-    # Supervised Matrix Factorization by double 2-layer coupeld NN for GPU acceleration
-    # Simultaneous dimension reduction and classification
-    # Author: Joowon Lee and Hanbaek Lyu
-    # REF = Joowon Lee, Hanbaek Lyu, and Weixin Yao,
-    # “Supervised Matrix Factorization: Local Landscape Analysis and Applications ” ICML 2024
-    # https://proceedings.mlr.press/v235/lee24p.html
-    # (Nonnegative)MF + 2-layer NN classifier 
-    # Model: Data (X) \approx Dictionary (W) @ Code (H)
-    #        Label (Y) \approx logit(Beta.T @ W.T @ X) (for SMF-W)
-    #        Label (Y) \approx logit(Beta.T @ H) (for SMF-H)
-
-
     def __init__(self,
                  X_train, y_train,
                  hidden_size=4,
+                 output_size=1,
                  device='cuda'):
         super(smf, self).__init__()
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        if device =='mps':
-            self.device = torch.device('mps')
-        print(f"!!! torch.device: {self.device}")
-
-        if y_train.ndim == 1:
-            self.multiclass = False
-            self.output_size = 1
-        else:
-            self.multiclass = True
-            self.output_size = y_train.shape[1]
+        if device =='cpu':
+            self.device = torch.device('cpu')
 
         self.X_train = X_train.to(self.device)
-        self.y_train = y_train.to(self.device) 
+        self.y_train = y_train.to(self.device) # binary label. Need to revise for multi-class using one-hot encoding.
+        #self.X_test = X_test
+        #self.y_test = y_test
         self.hidden_size = hidden_size
-
-        if self.multiclass == True:
-            self.model_Classification = self._initialize_multiclassification_model().to(self.device)
-            self.model_Classification_beta = self._initialize_multiclassification_model_for_beta().to(self.device)
-        else:
-            self.model_Classification = self._initialize_classification_model().to(self.device)
-            self.model_Classification_beta = self._initialize_classification_model_for_beta().to(self.device)
+        self.output_size = output_size
+        #self.num_epochs = num_epochs
+        #self.lr_classification = lr_classification
+        #self.lr_matrix_factorization = lr_matrix_factorization
+        #self.psi = psi
+        self.model_Classification = self._initialize_classification_model().to(self.device)
         self.model_MF = self._initialize_matrix_factorization_model().to(self.device)
-        self.model_MF_H = self._initialize_matrix_factorization_model_for_H().to(self.device)
+        #self.model_Classification_beta = self._initialize_classification_model_for_beta().to(self.device)
 
         self.result_dict = {}
         self.result_dict.update({'n_components' : hidden_size})
@@ -67,50 +52,32 @@ class smf(nn.Module):
         class Classification(nn.Module):
             def __init__(self, input_size, hidden_size, output_size=1):
                 super(Classification, self).__init__()
-                self.linear_W = nn.Linear(input_size, hidden_size, bias = False) # W.T @ X 
+                self.linear_W = nn.Linear(input_size, hidden_size, bias = False) # W.T @ X
+                #nn.init.xavier_uniform_(self.linear_W.weight)  # Apply Xavier initialization
+                #self.activation = nn.ReLU() # make W nonnegative
                 self.linear_beta = nn.Linear(hidden_size, output_size) # activation beta.T @ (W.T @ X)
-                # print(f"linear_beta's shape: {self.linear_beta.weight.shape}")
-                # print(f"linear_W's shape: {self.linear_W.weight.shape}")
+                #nn.init.xavier_uniform_(self.linear_beta.weight)  # Apply Xavier initialization
+                self.Sigmoid = nn.Sigmoid()
 
             def forward(self, x):
                 x1 = self.linear_W(x)
-                x2 = self.linear_beta(x1)
-                # print(f"x2's shape: {x2.shape}")
-                x3 = torch.sigmoid(x2)
-                return x3
+                #x2 = self.activation(x1)
+                x3 = self.linear_beta(x1)
+                x4 = self.Sigmoid(x3)
+                return x4
 
         model = Classification(self.X_train.shape[1], self.hidden_size, self.output_size)
+
         return model.to(self.device)
 
-    def _initialize_multiclassification_model(self):
-        class MultiClassification(nn.Module):
-            def __init__(self, input_size, hidden_size, output_size):
-                super(MultiClassification, self).__init__()
-                self.linear_W = nn.Linear(input_size, hidden_size, bias = False) # W.T @ X
-                self.linear_beta = nn.Linear(hidden_size, output_size) # activation beta.T @ (W.T @ X)
-                # print(f"!!! linear_beta: {self.linear_beta.weight.shape}")
-
-            def forward(self, x):
-                x1 = self.linear_W(x)
-                x2 = self.linear_beta(x1)
-                x3 = torch.zeros_like(x2)
-                for i in range(x2.shape[0]):
-                    max_i = torch.max(x2[i])
-                    x3[i] = torch.exp(x2[i] - max_i) / (torch.exp(-max_i) + torch.sum(torch.exp(x2[i] - max_i)))
-                # print(f"x3: {x3.shape}")
-                return x3
-
-        model = MultiClassification(self.X_train.shape[1], self.hidden_size, self.output_size)
-        return model.to(self.device)
-    
     def _initialize_matrix_factorization_model(self):
         class MF(nn.Module):
             def __init__(self, X, hidden_size):
                 super(MF, self).__init__()
                 self.W = nn.Parameter(torch.rand(X.shape[0], hidden_size).clamp(min=1e-8))
+                #nn.init.xavier_uniform_(self.W)  # Apply Xavier initialization
                 self.H = nn.Parameter(torch.rand(hidden_size, X.shape[1]).clamp(min=1e-8))
-                # print(f"W: {self.W.shape}")
-                # print(f"H: {self.H.shape}")
+                #nn.init.xavier_uniform_(self.H)  # Apply Xavier initialization
 
             def forward(self):
                 return torch.mm(self.W, self.H)
@@ -118,49 +85,8 @@ class smf(nn.Module):
         model = MF(self.X_train.T, self.hidden_size)
         return model
 
-    def _initialize_classification_model_for_beta(self):
-        class Classification_beta(nn.Module):
-            def __init__(self, hidden_size, output_size=1):
-                super().__init__()
-                self.linear_beta = nn.Linear(hidden_size, output_size)
 
-            def forward(self, a):
-                act = self.linear_beta(a) # input a = W.T @ X
-                y_pred = torch.softmax(act)
-                return y_pred
 
-        model = Classification_beta(self.hidden_size, self.output_size)
-        return model.to(self.device)
-    
-    def _initialize_multiclassification_model_for_beta(self):
-        class MultiClassification_beta(nn.Module):
-            def __init__(self, hidden_size, output_size=1):
-                super().__init__()
-                self.linear_beta = nn.Linear(hidden_size, output_size)
-                # print(f"The beta: {self.linear_beta.weight.shape}")
-
-            def forward(self, a):
-                act = self.linear_beta(a) # input a = W.T @ X
-                y_pred = torch.zeros_like(act)
-                for i in range(act.shape[0]):
-                    max_i = torch.max(act[i])
-                    y_pred[i] = torch.exp(act[i] - max_i) / (torch.exp(-max_i) + torch.sum(torch.exp(act[i] - max_i)))
-                return y_pred
-
-        model = MultiClassification_beta(self.hidden_size, self.output_size)
-        return model.to(self.device)
-
-    def _initialize_matrix_factorization_model_for_H(self):
-        class MF_H(nn.Module):
-            def __init__(self, X, hidden_size):
-                super(MF_H, self).__init__()
-                self.H = nn.Parameter(torch.rand(hidden_size, X.shape[1]).clamp(min=1e-8))
-
-            def forward(self, W):
-                return torch.mm(W, self.H)
-
-        model = MF_H(self.X_train.T, self.hidden_size)
-        return model
 
     def rank_r_projection(self, X, rank):
         from sklearn.decomposition import TruncatedSVD
@@ -180,14 +106,13 @@ class smf(nn.Module):
             lr_classification=0.1,
             lr_matrix_factorization=0.1,
             xi=1,
-            ini_loading=None,
-            ini_code=None,
-            initialize='spectral',
+            ini_loading = None,
+            ini_code = None,
+            initialize ='spectral',
             W_nonnegativity=True,
             H_nonnegativity=True,
             test_data=None, #or [X_test, y_test]
-            record_recons_error=False,
-            threshold = 0.5):
+            record_recons_error=False):
 
         self.result_dict.update({'xi' : xi})
         self.result_dict.update({'nonnegativity' : [W_nonnegativity, H_nonnegativity]})
@@ -197,7 +122,6 @@ class smf(nn.Module):
         elapsed_time = 0
         self.result_dict.update({"time_error": time_error})
 
-        # ini_loading = [W, beta]
         if ini_loading is not None:
             W0 = Variable(ini_loading[0]).to(self.device)
             Beta0 = Variable(ini_loading[1][:,1:]).to(self.device)
@@ -227,146 +151,155 @@ class smf(nn.Module):
 
         elif initialize == 'random':
             if ini_loading is None:
-                W0 = torch.rand(self.X_train.shape[1], self.hidden_size).to(self.device)
-                self.model_MF.W = nn.Parameter(W0)
+                self.model_MF.W = nn.Parameter(torch.rand(self.X_train.shape[1], self.hidden_size).to(self.device))
                 self.model_Classification.linear_W.weight = nn.Parameter(W0.T)
             if ini_code is None:
                 self.model_MF.H = nn.Parameter(torch.rand(self.hidden_size, self.X_train.shape[0]).to(self.device))
 
-        criterion_Classification = nn.CrossEntropyLoss()
+        criterion_Classification = nn.BCELoss()
+        optimizer_Classification = optim.SGD(self.model_Classification.parameters(), lr=lr_classification)
+
         criterion_MF = nn.MSELoss()
+        optimizer_MF = optim.SGD(self.model_MF.parameters(), lr=lr_matrix_factorization)
 
-        optimizer_Classification = optim.Adagrad(self.model_Classification.parameters(), lr=lr_classification, weight_decay=0.1)
-        optimizer_MF = optim.Adagrad(self.model_MF.parameters(), lr=lr_matrix_factorization, weight_decay=0)
+        #criterion_Classification_beta = nn.BCELoss()
+        #optimizer_Classification_beta = optim.Adagrad(self.model_Classification_beta.parameters(), lr=lr_classification)
 
-        if record_recons_error:
-            if self.multiclass == False:
-                self.result_dict.update({'curren_epoch': -1})
-                self.result_dict.update({'elapsed_time': 0})
-
-                W_dict = np.asarray(self.model_MF.W.data.cpu().numpy()).copy()
-                H = np.asarray(self.model_MF.H.data.cpu().numpy()).copy()
-                Beta = np.asarray(self.model_Classification.linear_beta.weight.detach().cpu().numpy()).copy()
-                Beta_bias = np.asarray(self.model_Classification.linear_beta.bias.detach().cpu().numpy()).copy()
-                Beta_combined = np.hstack((Beta_bias.reshape(self.output_size, -1),Beta))
-
-                self.result_dict.update({'loading': [W_dict, Beta_combined]})
-                self.result_dict.update({'code': H})
-                self.compute_recons_error()
-            else:
-                self.result_dict.update({'curren_epoch': -1})
-                self.result_dict.update({'elapsed_time': 0})
-
-                W_dict = np.asarray(self.model_MF.W.data.cpu().numpy()).copy()
-                H = np.asarray(self.model_MF.H.data.cpu().numpy()).copy()
-                Beta = np.asarray(self.model_Classification.linear_beta.weight.detach().cpu().numpy()).copy()
-                Beta_bias = np.asarray(self.model_Classification.linear_beta.bias.detach().cpu().numpy()).copy()
-                Beta_combined = np.hstack((Beta_bias.reshape(self.output_size, -1),Beta))
-
-                self.result_dict.update({'loading': [W_dict, Beta_combined]})
-                self.result_dict.update({'code': H})
-                self.compute_recons_error_multi()
-                        
         for epoch in range(num_epochs):
             self.result_dict.update({'curren_epoch': epoch})
             start = time.time()
 
-            # Update W
-            optimizer_Classification.zero_grad()
-            y_hat = self.model_Classification(self.X_train)
-            # print(f"!!! y_hat.shape: {y_hat.squeeze().shape}")
-            # print(f" !!! y_train.shape: {self.y_train.shape}")
-            loss_Classification = criterion_Classification(y_hat.squeeze(), self.y_train.float())
-            loss_Classification.backward()
-            optimizer_Classification.step()
 
-            optimizer_MF.zero_grad()
+            y_hat = self.model_Classification(self.X_train)
+            loss_Classification = criterion_Classification(y_hat.squeeze(), self.y_train.float())
+            #optimizer_Classification.zero_grad()
+            #loss_Classification.backward()
+            #optimizer_Classification.step()
+
             X_hat = self.model_MF().to(self.device)
             loss_MF = criterion_MF(X_hat, self.X_train.T)
-            loss_MF.backward()
-            optimizer_MF.step()
+            #optimizer_MF.zero_grad()
+            #loss_MF.backward()
+            #optimizer_MF.step()
 
+            """
             common_W = (xi/(1+xi)) * self.model_MF.W.data.to(self.device) + (1/(1+xi)) * self.model_Classification.linear_W.weight.T
             common_W = common_W/ common_W.norm()
             common_W = common_W.to(self.device)
-
-            if W_nonnegativity:
-                common_W = common_W.clamp(min=1e-8)
-
-            with torch.no_grad():
-                self.model_Classification.linear_W.weight = nn.Parameter(common_W.T.clone())
-
-            with torch.no_grad():
-                self.model_MF.W = nn.Parameter(common_W.clone())
+            """
 
             X0 = np.asarray(self.X_train.T.detach().cpu().numpy())
             y_train_cpu = np.asarray(self.y_train.detach().cpu().numpy())
             y_train_cpu = y_train_cpu[np.newaxis,:]
-            y_train_cpu = y_train_cpu[0]
             W0 = np.asarray(self.model_MF.W.data.detach().cpu().numpy())
-            X0_comp = W0.T @ X0
-            # print(f"!!! y_train_cpu.shape: {y_train_cpu.shape}")
+            H0 = np.asarray(self.model_MF.H.data.detach().cpu().numpy())
+            Beta_weight = self.model_Classification.linear_beta.weight
+            Beta_weight = np.asarray(Beta_weight.detach().cpu().numpy())
+            Beta_bias = self.model_Classification.linear_beta.bias
+            Beta_bias = np.asarray(Beta_bias.detach().cpu().numpy())
+            Beta_bias = Beta_bias[:,np.newaxis]
+            Beta = np.hstack((Beta_bias, Beta_weight))
+            W0 = [W0, Beta]
+
+            """
+            print("X0.shape=", X0.shape)
+            #print("W0.shape=", W0.shape)
+            print("H0.shape=", H0.shape)
+            print("Beta_weight.shape=", Beta_weight.shape)
+            print("Beta_bias.shape=", Beta_bias.shape)
+            print("Beta.shape=", Beta.shape)
+            """
+
+            W = update_dict_joint_logistic([X0, y_train_cpu], H0, W0, stopping_diff=0.0001,
+                                             sub_iter = 5,
+                                             r=None, nonnegativity=None,
+                                             a1=0, a2=0,
+                                             subsample_size = None)
+            W = W/np.linalg.norm(W)
+
+            """
+            if W_nonnegativity:
+                #self.model_MF.W.data = self.model_MF.W.data.clamp(min=1e-8)
+                #self.model_Classification.linear_W.weight = self.model_Classification.linear_W.weight.clamp(min=1e-8)
+                common_W = common_W.clamp(min=1e-8)
+            if H_nonnegativity:
+                self.model_MF.H.data = self.model_MF.H.data.clamp(min=1e-8)
+            """
 
             # fitting logistic regression again with updated W
-            ### Multinomial Case
-            if self.multiclass == True:
-                label_vec = np.copy(y_train_cpu.T)
-                for i in range(1, label_vec.shape[0]):
-                    label_vec[i, :][label_vec[i, :] == 1] = i+1
-                label_vec = np.sum(label_vec, axis=0)
-                clf = LogisticRegression(random_state=0, max_iter=300).fit(X0_comp.T, label_vec)
-                coef = np.zeros((self.y_train.shape[1], W0.shape[1]))
-                for row in range(self.y_train.shape[1]):
-                    coef[row] = clf.coef_[row+1] - clf.coef_[0]
-                intercepts = np.zeros(self.y_train.shape[1])
-                for i in range(self.y_train.shape[1]):
-                    intercepts[i] = clf.intercept_[i+1] - clf.intercept_[0]
-                beta_weight = torch.from_numpy(coef).float().to(self.device)
-                beta_bias = torch.from_numpy(intercepts).float().to(self.device)
-                # W[1] = self.update_beta_joint_logistic(X, H, W, stopping_diff=0.0001,
-                #                                  sub_iter = 5,
-                #                                  r=search_radius, nonnegativity=self.nonnegativity[1],
-                #                                  a1=self.L1_reg[1], a2=self.L2_reg[1],
-                #                                  subsample_size = None)
-            ### Binomial Case
-            else:
-                clf = LogisticRegression(random_state=0).fit(X0_comp.T, y_train_cpu)
-                beta_weight = torch.from_numpy(clf.coef_).float().to(self.device)
-                beta_bias = torch.from_numpy(clf.intercept_).float().to(self.device)
+            #X0_comp = torch.mm(W.T, self.X_train.T).T
+            X0_comp = W.T @ X0
+            #X0_comp = np.asarray(X0_comp.detach().cpu().numpy())
+            #y_train_cpu = np.asarray(self.y_train.detach().cpu().numpy())
+            clf = LogisticRegression(random_state=0).fit(X0_comp.T, y_train_cpu[0])
+            beta_weight = torch.from_numpy(clf.coef_).float().to(self.device)
+            beta_bias = torch.from_numpy(clf.intercept_).float().to(self.device)
 
-            """
-            # torch version
-            criterion_Classification_beta = nn.CrossEntropyLoss()
-            optimizer_Classification_beta = optim.Adam(self.model_Classification_beta.parameters(), lr=0.1, weight_decay=0.1)
-            common_W = torch.from_numpy(W).float().to(self.device)
-            a1 = torch.mm(common_W.T, self.X_train.T).T
-            for epoch1 in range(10):
-                optimizer_Classification_beta.zero_grad()
-                y_hat1 = self.model_Classification_beta(a1)
-                loss_Classification_beta = criterion_Classification_beta(y_hat1.squeeze(), self.y_train.float())
-                loss_Classification_beta.backward(retain_graph=True)
-                optimizer_Classification_beta.step()
-            """
 
-            # find H with updated W
-            criterion_MF_H = nn.MSELoss()
-            optimizer_MF_H = optim.Adagrad(self.model_MF_H.parameters(), lr=1)
-            for epoch1 in range(5):
-                optimizer_MF_H.zero_grad()
-                X_hat1 = self.model_MF_H(common_W)
-                loss_MF_H = criterion_MF_H(X_hat1, self.X_train.T)
-                loss_MF_H.backward(retain_graph=True)
-                optimizer_MF_H.step()
+            # Code Update
 
-                if H_nonnegativity:
-                    self.model_MF.H.data = self.model_MF.H.data.clamp(min=1e-8)
+            #X0 = np.asarray(self.X_train.T.detach().cpu().numpy())
+            #W0 = np.asarray(common_W.detach().cpu().numpy())
+            H0 = np.asarray(self.model_MF.H.data.detach().cpu().numpy())
+            H = update_code_within_radius(X0, W, H0, r=None,
+                                        a1=0, a2=0,
+                                        nonnegativity=None)
+
+            #print("np.linalg.norm(H0)=", np.linalg.norm(H0))
+            #print("np.linalg.norm(H)=", np.linalg.norm(H))
+
+            W = torch.from_numpy(W).float().to(self.device)
+            H = torch.from_numpy(H).float().to(self.device)
+
 
             with torch.no_grad():
+                self.model_Classification.linear_W.weight = nn.Parameter(W.T.clone())
+                #self.model_Classification.linear_beta.weight = nn.Parameter(self.model_Classification_beta.linear_beta.weight.clone())
+                #self.model_Classification.linear_beta.bias = nn.Parameter(self.model_Classification_beta.linear_beta.bias.clone())
+
+
                 self.model_Classification.linear_beta.weight = nn.Parameter(beta_weight.clone())
                 self.model_Classification.linear_beta.bias = nn.Parameter(beta_bias.clone())
 
             with torch.no_grad():
-                self.model_MF.H = nn.Parameter(self.model_MF_H.H.data.clone())
+                self.model_MF.W = nn.Parameter(W.clone())
+                self.model_MF.H = nn.Parameter(H.clone())
+
+
+
+            #print("self.model_Classification.linear_beta.bias.shape", self.model_Classification.linear_beta.bias.shape)
+            #print("self.model_Classification.linear_beta.weight.shape", self.model_Classification.linear_beta.weight.shape)
+
+            #print("self.model_Classification.linear_beta.weight=", self.model_Classification.linear_beta.weight)
+
+
+
+
+            #print("beta_weight=", beta_weight)
+            #print("beta_bias=", beta_bias)
+
+            #print("beta_weight.shape=", beta_weight.shape)
+            #print("beta_bias.shape=", beta_bias.shape)
+
+            """
+            beta_weight, beta_bias = fit_LR_torch(input=a1,
+                                                  output=self.y_train,
+                                                  device=self.device,
+                                                  num_epochs=10, lr=0.01)
+            """
+
+
+
+            """
+            for step in torch.arange(0,5):
+                y_hat1 = self.model_Classification_beta(a1)
+                loss_Classification_beta = criterion_Classification_beta(y_hat1.squeeze(), self.y_train.float())
+                optimizer_Classification_beta.zero_grad()
+                loss_Classification_beta.backward(retain_graph=True)
+                optimizer_Classification_beta.step()
+                print("epoch={}, step={}, beta={}".format(epoch, step, self.model_Classification.linear_beta.weight))
+            """
+
 
             end = time.time()
             elapsed_time += end - start
@@ -374,15 +307,14 @@ class smf(nn.Module):
 
             if (epoch+1) % 10 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}],'
-                      f"Elapsed_time: {self.result_dict['elapsed_time']}," 
                       f'Loss_Classification: {loss_Classification.item():.4f}',
                       f'Loss_MF: {loss_MF.item():.4f}')
 
                 if test_data is not None:
-                    if self.multiclass == False:
-                        self.test(test_data[0], test_data[1])
-                    else:
-                        self.test_multi(test_data[0], test_data[1])
+                    self.test(test_data[0], test_data[1])
+
+                #print("Training accuracy=")
+                #self.test(self.X_train, self.y_train)
 
                 if record_recons_error:
                     loading = {}
@@ -394,10 +326,11 @@ class smf(nn.Module):
 
                     self.result_dict.update({'loading': [W_dict, Beta_combined]})
                     self.result_dict.update({'code': H})
-                    if self.multiclass == False:
-                        self.compute_recons_error()
-                    else:
-                        self.compute_recons_error_multi
+
+                    #print("common_W.norm()=", common_W.norm())
+                    #print("np.linalg.norm(H0)=", np.linalg.norm(H0))
+                    self.compute_recons_error()
+
 
         loading = {}
         W_dict = np.asarray(self.model_MF.W.data.cpu().numpy()).copy()
@@ -405,14 +338,17 @@ class smf(nn.Module):
         Beta = np.asarray(self.model_Classification.linear_beta.weight.detach().cpu().numpy()).copy()
         Beta_bias = np.asarray(self.model_Classification.linear_beta.bias.detach().cpu().numpy()).copy()
         Beta_combined = np.hstack((Beta_bias.reshape(self.output_size, -1),Beta))
+        #print("Beta.shape=", Beta.shape)
+        #print("Beta_bias.shape=", Beta_bias.shape)
+        #print("Beta_combined.shape=", Beta_combined.shape)
 
         self.result_dict.update({'loading': [W_dict, Beta_combined]})
         self.result_dict.update({'code': H})
         return self.result_dict
 
     def compute_recons_error(self):
-
         # print the error every 50 iterations
+
         W = self.result_dict.get('loading')
         H = self.result_dict.get('code')
         X_train = np.asarray(self.X_train.cpu().numpy()).copy().T
@@ -428,6 +364,9 @@ class smf(nn.Module):
 
         P_pred = np.matmul(W[1], X0_ext)
         P_pred = 1 / (np.exp(-P_pred) + 1)
+        # print('!!! error norm', np.linalg.norm(X[1][0, :]-P_pred[0,:])/X[1].shape[1])
+        #fpr, tpr, thresholds = metrics.roc_curve(X[1][0, :], P_pred[0,:], pos_label=None)
+
         P_pred = self.model_Classification.forward(self.X_train.to(self.device))
         P_pred = np.asarray(P_pred.detach().cpu().numpy()).T
 
@@ -463,6 +402,13 @@ class smf(nn.Module):
         F_score = 2 * precision * recall / ( precision + recall )
 
         self.result_dict.update({'Training_ACC':accuracy})
+        #print("Training_ACC=", accuracy)
+
+        #train_pred = self.model_Classification.forward(self.X_train.to(self.device))
+        #print("train_pred=", train_pred[:10])
+        #print("P_pred=", P_pred[:10])
+
+
 
         error_label = np.sum(np.log(1+np.exp(W[1] @ X0_ext))) - X[1] @ (W[1] @ X0_ext).T
         error_label = error_label[0][0]
@@ -470,65 +416,15 @@ class smf(nn.Module):
         total_error_new = error_label + self.result_dict.get('xi') * error_data
         elapsed_time = self.result_dict.get("elapsed_time")
         time_error = self.result_dict.get("time_error")
+
+
         time_error = np.append(time_error, np.array([[elapsed_time, error_data, error_label]]).T, axis=1)
         print('--- Iteration %i: Training loss --- [Data, Label, Total] = [%f.3, %f.3, %f.3]' % (self.result_dict.get("curren_epoch"), error_data, error_label, total_error_new))
 
         self.result_dict.update({'Relative_reconstruction_loss (training)': rel_error_data})
         self.result_dict.update({'Classification_loss (training)': error_label})
         self.result_dict.update({'time_error': time_error})
-    
-    def compute_recons_error_multi(self):
-        # print the error every 50 iterations
-        W = self.result_dict.get('loading')
-        H = self.result_dict.get('code')
-        X_train = np.asarray(self.X_train.cpu().numpy()).copy().T
-        y_train = np.asarray(self.y_train.cpu().numpy()).copy().T
-        X = [X_train, y_train]
 
-        error_data = np.linalg.norm((X[0] - W[0] @ H).reshape(-1, 1), ord=2)**2
-        rel_error_data = error_data / np.linalg.norm(X[0].reshape(-1, 1), ord=2)**2
-
-        X0_comp = W[0].T @ X[0]
-        X0_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
-
-        ### modify matrices as sparse matrices
-        # Assuming W[1], X0_ext, and X[1] are dense matrices, convert them to sparse format
-        # Convert dense matrices to sparse format
-        W_sparse = csr_matrix(W[1])
-        X0_ext_sparse = csr_matrix(X0_ext)
-        X_sparse = csr_matrix(X[1])
-
-        # Perform matrix multiplication using sparse matrices
-        sparse_result = W_sparse @ X0_ext_sparse
-
-        # Apply np.exp only to the non-zero elements of the sparse matrix
-        exp_data = np.exp(sparse_result.data)
-
-        # Create a new sparse matrix with the exponentiated values
-        exp_result = csr_matrix((exp_data, sparse_result.indices, sparse_result.indptr), shape=sparse_result.shape)
-
-        # Convert sparse matrix to dense format before summation (if needed)
-        exp_result_dense = exp_result.toarray()
-
-        # Calculate trace manually on sparse matrices (sum of diagonal elements)
-        trace_result = np.sum((X_sparse.T @ W_sparse @ X0_ext_sparse).diagonal())
-
-        # Calculate error_label
-        error_label = np.sum(1 + np.sum(exp_result_dense, axis=0)) - trace_result
-
-        # Continue with the original logic for total_error_new
-        total_error_new = error_label + self.result_dict.get('xi') * error_data
-        # error_label = np.sum(1 + np.sum(np.exp(W[1]@X0_ext), axis=0)) - np.trace(X[1].T @ W[1] @ X0_ext)
-        # total_error_new = error_label + self.result_dict.get('xi') * error_data
-
-        elapsed_time = self.result_dict.get("elapsed_time")
-        time_error = self.result_dict.get("time_error")
-        time_error = np.append(time_error, np.array([[elapsed_time, error_data, error_label]]).T, axis=1)
-        print('--- Iteration %i: Training loss --- [Data, Label, Total] = [%f.3, %f.3, %f.3]' % (self.result_dict.get("curren_epoch"), error_data, error_label, total_error_new))
-
-        self.result_dict.update({'Relative_reconstruction_loss (training)': rel_error_data})
-        self.result_dict.update({'Classification_loss (training)': error_label})
-        self.result_dict.update({'time_error': time_error.T})
 
     def test(self, X_test, y_test):
         with torch.no_grad():
@@ -544,7 +440,11 @@ class smf(nn.Module):
             print("mythre_test=", mythre_test)
             y_hat = (predictions.squeeze() > mythre).int()
             y_hat = np.asarray(y_hat.cpu().numpy())
+            #print("Predictions:", predicted_labels.cpu().numpy())
             y_test = np.asarray(y_test.cpu().numpy()).copy()
+            #accuracy = np.mean((y_test.cpu()==y_hat.cpu()).numpy())
+
+
 
             mcm = confusion_matrix(y_test, y_hat)
             tn = mcm[0, 0]
@@ -561,6 +461,7 @@ class smf(nn.Module):
             fall_out = fp / (fp + tn)
             miss_rate = fn / (fn + tp)
             F_score = 2 * precision * recall / ( precision + recall )
+
 
             self.result_dict.update({'Y_test': y_test})
             self.result_dict.update({'P_pred': P_pred})
@@ -579,174 +480,193 @@ class smf(nn.Module):
 
             print("Test accuracy = {}, Test AUC = {}".format(np.round(accuracy, 3), np.round(myauc_test, 3)) )
 
-    def test_multi(self, X_test, y_test):
-        with torch.no_grad():
-            predictions = self.model_Classification(X_test.to(self.device))
-            P_pred = np.asarray(predictions.detach().cpu().numpy())
 
-            mythre = self.result_dict.get("Training_threshold")
-            print("mythre=", mythre)
+def update_dict_joint_logistic(X, H, W0, r, xi=0.1, a1=0, a2=0, sub_iter=2, stopping_diff=0.1, nonnegativity=True, subsample_size=None):
+    '''
+    X = [X0, X1]
+    W = [W0, W1+W2]
+    Find \hat{W} = argmin_W ( || X0 - W0 H||^2 + alpha|H| + Logistic_Loss(W[0].T @ X1, W[1])) within radius r from W0
+    Compressed data = W[0].T @ X0 instead of H
+    '''
 
-            y_hat = (predictions.squeeze() > mythre).int()
-            y_hat = np.asarray(y_hat.cpu().numpy())
-            y_test = np.asarray(y_test.cpu().numpy()).copy()
+    if W0 is None:
+        W0 = np.random.rand(X[0].shape[0], H.shape[0])
+        print('!!! W0.shape', W0.shape)
 
+    #if not self.full_dim:
+    A = H @ H.T
 
-            y_test_result = []
-            y_pred_result = []
-            
-            # for i in np.arange(y_test.shape[0]):
-            #     for j in np.arange(y_test.shape[1]):
-            #         if y_test[i,j] == 1:
-            #             y_test_result.append(1)
-            #         else:
-            #             y_test_result.append(0)
-            #         if P_pred[i,j] >= mythre:
-            #             y_pred_result.append(1)
-            #         else:
-            #             y_pred_result.append(0)
+    W1 = W0[0].copy()
+    i = 0
+    dist = 1
+    idx = np.arange(X[0].shape[0])
+    while (i < sub_iter) and (dist > stopping_diff):
+        W1_old = W1.copy()
 
-            # mcm = metrics.confusion_matrix(y_test_result, y_pred_result)
-            # accuracy = np.trace(mcm)/np.sum(np.sum(mcm))
+        # Regression Parameters Update
 
-            # tn = mcm[0, 0]
-            # tp = mcm[1, 1]
-            # fn = mcm[1, 0]
-            # fp = mcm[0, 1]
+        X0_comp = W1.T @ X[0]
+        H1_ext = np.vstack((np.ones(X[1].shape[1]), X0_comp))
 
-            # accuracy = (tp + tn) / (tp + tn + fp + fn)
-            # misclassification = 1 - accuracy
-            # sensitivity = tp / (tp + fn)
-            # specificity = tn / (tn + fp)
-            # precision = tp / (tp + fp)
-            # recall = tp / (tp + fn)
-            # fall_out = fp / (fp + tn)
-            # miss_rate = fn / (fn + tp)
-            # F_score = 2 * precision * recall / ( precision + recall )
+        D = W0[1] @ H1_ext
+        P = 1 / (1 + np.exp(-D))
 
-            count = 0
-            for i in np.arange(y_test.shape[0]):
-                # predicted class of sample "i":
-                y1 = np.arange(y_hat.shape[1])[np.max(y_hat[i,:]) ==  y_hat[i,:]][0]
-                
-                # True class of sample "i":
-                if np.max(y_test[i,:]) == 1:
-                    y2 = np.sum( np.arange(1,y_test.shape[1]+1) * (y_test[i,:] == 1) )
-                else:
-                    y2 = 0
-                
-                y_test_result.append(y1)
-                y_pred_result.append(y2)
-            
-            confusion_mx = metrics.confusion_matrix(y_test_result, y_pred_result)
-            accuracy = np.trace(confusion_mx) / y_test.shape[0]
+        grad_MF = (W1 @ H - X[0]) @ H.T
+        grad_pred = X[0] @ (P-X[1]).T @ W0[1][:, 1: H.shape[0]+1] # exclude the first column of W[1] (intercept terms)
+        grad = xi * grad_MF + grad_pred + a1 * np.sign(W1)*np.ones(shape=W1.shape) + a2 * W1
+        # grad = grad_MF
 
-            # print(f"!!! The temp_acc: {temp_acc}")
-            self.result_dict.update({'confusion_mx':confusion_mx})
-            self.result_dict.update({'Accuracy': accuracy})
+        W1 -= (1 / (((i + 10) ** (0.5)) * (np.trace(A) + 1))) * grad
 
-            self.result_dict.update({'Y_test': y_test})
-            self.result_dict.update({'P_pred': P_pred})
-            self.result_dict.update({'Y_pred': y_hat})
-            
-            print("Test accuracy = {}, Test confusion_mx = {}".format(accuracy, confusion_mx))
-            
+        if r is not None:  # usual sparse coding without radius restriction
+            d = np.linalg.norm(W1 - W0[0], 2)
+            W1 = W0[0] + (r / max(r, d)) * (W1 - W0[0])
+        W0[0] = W1
+
+        if nonnegativity:
+            W1 = np.maximum(W1, np.zeros(shape=W1.shape))  # nonnegativity constraint
+
+        dist = np.linalg.norm(W1 - W1_old, 2) / np.linalg.norm(W1_old, 2)
+        dist = 1
+        # print('!!! dist', dist)
+        # H1_old = H1
+        i = i + 1
+        # print('!!!! i', i)  # mostly the loop finishes at i=1 except the first round
 
 
-def display_dictionary(W, save_name=None, score=None, grid_shape=None):
-    k = int(np.sqrt(W.shape[0]))
-    rows = int(np.sqrt(W.shape[1]))
-    cols = int(np.sqrt(W.shape[1]))
-    if grid_shape is not None:
-        rows = grid_shape[0]
-        cols = grid_shape[1]
-
-    figsize0=(6, 6)
-    if (score is None) and (grid_shape is not None):
-       figsize0=(cols, rows)
-    if (score is not None) and (grid_shape is not None):
-       figsize0=(cols, rows+0.2)
-
-    fig, axs = plt.subplots(nrows=rows, ncols=cols, figsize=figsize0,
-                            subplot_kw={'xticks': [], 'yticks': []})
+    return W1
 
 
-    for ax, i in zip(axs.flat, range(100)):
-        if score is not None:
-            idx = np.argsort(score)
-            idx = np.flip(idx)
+def update_code_within_radius(X, W, H0, r, a1=0, a2=0,
+                              sub_iter=[2], stopping_grad_ratio=0.0001,
+                              subsample_ratio=None, nonnegativity=True,
+                              use_line_search=False):
+    '''
+    Find \hat{H} = argmin_H ( | X - WH| + alpha|H| ) within radius r from H0
+    Use row-wise projected gradient descent
+    Do NOT sparsecode the whole thing and then project -- instable
+    12/5/2020 Lyu
 
-            ax.imshow(W.T[idx[i]].reshape(k, k), cmap="viridis", interpolation='nearest')
-            ax.set_xlabel('%1.2f' % score[i], fontsize=13)  # get the largest first
-            ax.xaxis.set_label_coords(0.5, -0.05)
-        else:
-            ax.imshow(W.T[i].reshape(k, k), cmap="viridis", interpolation='nearest')
-            if score is not None:
-                ax.set_xlabel('%1.2f' % score[i], fontsize=13)  # get the largest first
-                ax.xaxis.set_label_coords(0.5, -0.05)
+    For NTF problems, X is usually tall and thin so it is better to subsample from rows
+    12/25/2020 Lyu
 
-    plt.tight_layout()
-    # plt.suptitle('Dictionary learned from patches of size %d' % k, fontsize=16)
-    plt.subplots_adjust(0.08, 0.02, 0.92, 0.85, 0.08, 0.23)
+    Apply single round of AdaGrad for rows, stop when gradient norm is small and do not make update
+    12/27/2020 Lyu
+    '''
 
-    if save_name is not None:
-        plt.savefig( save_name, bbox_inches='tight')
-    plt.show()
+    # print('!!!! X.shape', X.shape)
+    # print('!!!! W.shape', W.shape)
+    # print('!!!! H0.shape', H0.shape)
+
+    if H0 is None:
+        H0 = np.random.rand(W.shape[1], X.shape[1])
+    H1 = H0.copy()
+    i = 0
+    dist = 1
+    idx = np.arange(X.shape[0])
+    H1_old = H1.copy()
+
+    A = W.T @ W
+    B = W.T @ X
+
+    while (i < np.random.choice(sub_iter)):
+        if_continue = np.ones(H0.shape[0])  # indexed by rows of H
+
+        for k in [k for k in np.arange(H0.shape[0]) if if_continue[k]>0.5]:
+
+            grad = np.dot(A[k, :], H1) - B[k, :]
+            grad += a1 * np.sign(H1[k, :]) * np.ones(H0.shape[1]) + a2 * H1[k, :]
+            grad_norm = np.linalg.norm(grad, 2)
+
+            # Initial step size
+            step_size = 1/(A[k,k]+1)
+            # step_size = 1 / (np.trace(A)) # use the whole trace
+            # step_size = 1
+            if r is not None:  # usual sparse coding without radius restriction
+                d = step_size * grad_norm
+                step_size = (r / max(r, d)) * step_size
+
+            H1_temp = H1.copy()
+            # loss_old = np.linalg.norm(X - W @ H1)**2
+            H1_temp[k, :] = H1[k, :] - step_size * grad
+            if nonnegativity:
+                H1_temp[k,:] = np.maximum(H1_temp[k,:], np.zeros(shape=(H1.shape[1],)))  # nonnegativity constraint
+            #loss_new = np.linalg.norm(X - W @ H1_temp)**2
+            #if loss_old > loss_new:
+
+                # print('recons_loss:' , np.linalg.norm(X - W @ H1, ord=2) / np.linalg.norm(X, ord=2))
+
+            """
+            if use_line_search:
+            # Armijo backtraking line search
+                m = grad.T @ H1[k,:]
+                H1_temp = H1.copy()
+                loss_old = np.linalg.norm(X - W @ H1)**2
+                loss_new = 0
+                count = 0
+                while (count==0) or (loss_old - loss_new < 0.1 * step_size * m):
+                    step_size /= 2
+                    H1_temp[k, :] = H1[k, :] - step_size * grad
+                    if nonnegativity:
+                        H1_temp[k,:] = np.maximum(H1_temp[k,:], np.zeros(shape=(H1.shape[1],)))  # nonnegativity constraint
+                    loss_new = np.linalg.norm(X - W @ H1_temp)**2
+                    count += 1
+            """
+            H1 = H1_temp
+
+        i = i + 1
 
 
-def rank_r_projection(X, rank):
-    from sklearn.decomposition import TruncatedSVD
-    svd = TruncatedSVD(n_components=rank, n_iter=7, random_state=42)
-    X_reduced = svd.fit_transform(X)
-    u = X_reduced.dot(np.linalg.inv(np.diag(svd.singular_values_)))
-    s = svd.singular_values_
-    vh = svd.components_
-    r = rank
-    u0 = u[:,:r]
-    s0 = s[:r]
-    v0 = vh[:r,:]
-    recons = u0 @ np.diag(s0) @ v0
-    return u0, s0, v0, recons
+    return H1
 
-def find_initial(X, Y, covariate = None, r = 16, generate="random"):
 
-    ## input
-    # X : p x n matrix
-    # Y : 1 x n matrix
-    # r : number of components
-    # covariate : p1 x n matrix (if any)
 
-    ## output
-    # W0 = [W0, beta_coef] : (p x r) initial loading, (r + p1) x 1 regression coefficient
-    # [0] feature based W0
-    # [1] filter based W0
-    # [2] H0 : r x n initial code
 
-    logistic_model = LogisticRegression(solver='liblinear', random_state=0)
+def fit_LR_torch(input, output, device='cuda', num_epochs=10, lr=0.01):
 
-    if generate == "spectral":
-        U0, S0, H0, recons = rank_r_projection(X, r)
-        W0 = U0 @ np.diag(S0)
+    print("input.shape", input.shape)
+    print("output.shape", output.shape)
 
-        if covariate is not None:
-            temp_X_H = np.hstack([H0.T, covariate.T]) # feature based
-            logit_fit_H = logistic_model.fit(temp_X_H, Y.T)
+    device0 = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device =='cpu':
+        device0 = torch.device('cpu')
 
-            temp_X_W = np.hstack([X.T @ W0, covariate.T]) # filter based (Replace H0 with W0.T @ X)
-            logit_fit_W = logistic_model.fit(temp_X_W, Y.T)
-        else:
-            logit_fit_H = logistic_model.fit(H0.T, Y.T)
-            logit_fit_W = logistic_model.fit(X.T @ W0, Y.T)
-    elif generate == "random":
-        W0 = np.random.rand(X.shape[0], r)
-        H0 = np.random.rand(r, X.shape[1])
-        logit_fit_H = logistic_model.fit(H0.T, Y.T)
-        logit_fit_W = logistic_model.fit(X.T @ W0, Y.T)
+    class LogisticRegression(nn.Module):
+        def __init__(self, input_size, output_size=1):
+            super(LogisticRegression, self).__init__()
+            self.linear_beta = nn.Linear(input_size, output_size)
+            self.Sigmoid = nn.Sigmoid()
 
-    reg_coef_H = np.asarray([np.append(logit_fit_H.intercept_[0], logit_fit_H.coef_[0])])
-    reg_coef_W = np.asarray([np.append(logit_fit_W.intercept_[0], logit_fit_W.coef_[0])])
+        def forward(self, a):
+            x1 = self.linear_beta(a) # input a = W.T @ X
+            x2 = self.Sigmoid(x1)
+            return x2
 
-    #reg_coef_H = 1-2*np.random.rand(reg_coef_H.shape[0],reg_coef_H.shape[1])
-    #reg_coef_W = 1-2*np.random.rand(reg_coef_H.shape[0],reg_coef_H.shape[1])
+        #model = __init__(input_size, output_size)
 
-    return [W0,reg_coef_H], [W0,reg_coef_W], H0
+        #return model
+
+
+    LR = LogisticRegression(input_size=input.shape[1],
+                            output_size=1).to(device0)
+
+    # Define the loss function and the optimizer
+    criterion = nn.BCELoss()
+    optimizer = optim.SGD(LR.parameters(), lr=lr)
+
+    # Training loop
+
+    for epoch in range(num_epochs):
+        # Forward pass
+        p_pred = LR.forward(input)
+        # Calculate the loss
+        loss = criterion(p_pred.squeeze().float(), output.float())
+
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    beta_weight = LR.linear_beta.weight
+    beta_bias = LR.linear_beta.bias
+    return beta_weight, beta_bias
